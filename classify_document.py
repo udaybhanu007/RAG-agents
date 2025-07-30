@@ -192,43 +192,6 @@ def analyze_repository_documents(directory_path):
     
     return results
 
-# def generate_classification_summary(results):
-#     """
-#     Generate a summary of classification results
-#     """
-#     if "error" in results:
-#         return results
-    
-#     summary = {
-#         "total_files": len(results),
-#         "by_classification": {},
-#         "by_extension": {},
-#         "files_by_type": {
-#             "structured": [],
-#             "unstructured": [],
-#             "mixed": [],
-#             "error": []
-#         }
-#     }
-    
-#     for filename, info in results.items():
-#         classification = info.get("classification", "error")
-#         extension = info.get("extension", "unknown")
-        
-#         # Count by classification
-#         summary["by_classification"][classification] = summary["by_classification"].get(classification, 0) + 1
-        
-#         # Count by extension
-#         summary["by_extension"][extension] = summary["by_extension"].get(extension, 0) + 1
-        
-#         # Group files by type
-#         summary["files_by_type"][classification].append({
-#             "filename": filename,
-#             "extension": extension,
-#             "size_bytes": info.get("size_bytes", 0)
-#         })
-    
-#     return summary
 
 # Test the classification system
 if __name__ == "__main__":
@@ -265,3 +228,42 @@ if __name__ == "__main__":
    
     
     print("\n=== Test Complete ===")
+
+
+    # def generate_classification_summary(results):
+#     """
+#     Generate a summary of classification results
+#     """
+#     if "error" in results:
+#         return results
+    
+#     summary = {
+#         "total_files": len(results),
+#         "by_classification": {},
+#         "by_extension": {},
+#         "files_by_type": {
+#             "structured": [],
+#             "unstructured": [],
+#             "mixed": [],
+#             "error": []
+#         }
+#     }
+    
+#     for filename, info in results.items():
+#         classification = info.get("classification", "error")
+#         extension = info.get("extension", "unknown")
+        
+#         # Count by classification
+#         summary["by_classification"][classification] = summary["by_classification"].get(classification, 0) + 1
+        
+#         # Count by extension
+#         summary["by_extension"][extension] = summary["by_extension"].get(extension, 0) + 1
+        
+#         # Group files by type
+#         summary["files_by_type"][classification].append({
+#             "filename": filename,
+#             "extension": extension,
+#             "size_bytes": info.get("size_bytes", 0)
+#         })
+    
+#     return summary

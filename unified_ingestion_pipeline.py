@@ -20,7 +20,7 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
-
+from utility_functions import UtilityFunctions
 # =============================================================================
 # DATA STRUCTURES
 # =============================================================================
@@ -128,39 +128,7 @@ def parse_mixed_document(file_path: str) -> ExtractedContent:
     raw_content = extract_real_pdf_content(file_path)
     full_text = raw_content['text']
     tables = raw_content['tables']
-    # Print tables in tabular form
-    # if tables:
-    #     print("\n==== TABLES (tabular form) ====")
-    #     for t in tables:
-    #         print(f"\nTable {t['index']+1} (Page {t['page']}):")
-    #         # Try to reconstruct DataFrame from content if possible
-    #         # If 'content' is a string, try to parse columns and rows
-    #         content_lines = t['content'].splitlines()
-    #         if len(content_lines) >= 2:
-    #             # First line is table header, second line is columns
-    #             columns_line = content_lines[1]
-    #             columns = [c.strip() for c in columns_line.replace('Columns:','').split(',')]
-    #             data_rows = []
-    #             for row_line in content_lines[2:]:
-    #                 if row_line.startswith('Row'):
-    #                     # Parse row: Row N: col1: val1 | col2: val2 ...
-    #                     row_data = {}
-    #                     parts = row_line.split(':', 1)
-    #                     if len(parts) == 2:
-    #                         row_content = parts[1].strip()
-    #                         for colval in row_content.split('|'):
-    #                             if ':' in colval:
-    #                                 col, val = colval.split(':', 1)
-    #                                 row_data[col.strip()] = val.strip()
-    #                     data_rows.append(row_data)
-    #             if data_rows:
-    #                 import pandas as pd
-    #                 df = pd.DataFrame(data_rows, columns=columns)
-    #                 print(df.to_string(index=False))
-    #             else:
-    #                 print("   (No data rows)")
-    #         else:
-    #             print("   (Malformed table content)")
+    
     
     # Parse narrative sections for vector database
     narrative_chunks = extract_narrative_for_vector_db(full_text)
@@ -179,7 +147,7 @@ def parse_mixed_document(file_path: str) -> ExtractedContent:
         "word_count": raw_content['word_count'],
         "table_count": raw_content['table_count'],
         "classification": "mixed",
-        "document_type": determine_document_type(full_text),
+        "document_type": UtilityFunctions.determine_document_type(full_text),
         "processing_timestamp": "2025-07-29T00:00:00Z"
     }
     
@@ -231,23 +199,23 @@ def extract_narrative_for_vector_db(text: str) -> List[str]:
         for pattern in patterns:
             matches = re.findall(pattern, text, re.IGNORECASE | re.DOTALL | re.MULTILINE)
             for match in matches:
-                clean_text = clean_text_for_vector_db(match)
+                clean_text = UtilityFunctions.clean_text_for_vector_db(match)
                 if len(clean_text) > 100:  # Minimum meaningful content
-                    chunks.extend(chunk_text(clean_text, section_name))
+                    chunks.extend(UtilityFunctions.chunk_text(clean_text, section_name))
                     sections_found.add(section_name)
                     break  # Found match for this section, try next section
     # If no clear sections found, use adaptive chunking
     if not sections_found:
         print("   📄 No standard sections found, using adaptive chunking...")
-        clean_full_text = clean_text_for_vector_db(text)
+        clean_full_text = UtilityFunctions.clean_text_for_vector_db(text)
         # Try to identify content blocks by line breaks and formatting
         paragraphs = [p.strip() for p in text.split('\n\n') if len(p.strip()) > 100]
         if paragraphs:
             for i, paragraph in enumerate(paragraphs[:10]):  # Limit to first 10 paragraphs
-                chunks.extend(chunk_text(paragraph, f"content_block_{i+1}"))
+                chunks.extend(UtilityFunctions.chunk_text(paragraph, f"content_block_{i+1}"))
         else:
             # Fallback to simple chunking
-            chunks = chunk_text(clean_full_text, "general_content")
+            chunks = UtilityFunctions.chunk_text(clean_full_text, "general_content")
     print(f"   📝 Extracted {len(chunks)} narrative chunks from {len(sections_found)} sections")
     return chunks
 
@@ -285,7 +253,7 @@ def extract_performance_metrics(text: str) -> Dict[str, List[float]]:
     for metric, pattern in metric_patterns.items():
         matches = re.findall(pattern, text, re.IGNORECASE)
         if matches:
-            metrics[metric] = [float(m) for m in matches if is_valid_metric(m)]
+            metrics[metric] = [float(m) for m in matches if UtilityFunctions.is_valid_metric(m)]
     
     return metrics
 
@@ -365,7 +333,7 @@ def extract_entities(text: str) -> List[Dict[str, str]]:
             })
     
     # Remove duplicates
-    return remove_duplicate_entities(entities)
+    return UtilityFunctions.remove_duplicate_entities(entities)
 
 ### Gunjan debug and validate on why relationships are not showing
 def extract_relationships(text: str, entities: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -377,8 +345,7 @@ def extract_relationships(text: str, entities: List[Dict[str, str]]) -> List[Dic
         if entity["category"] == "algorithm":
             algorithm = entity["value"]
             # Look for performance metrics near this algorithm mention
-            context_windows = find_context_windows(text, algorithm, window_size=300)
-            
+            context_windows = UtilityFunctions.find_context_windows(text, algorithm, window_size=300)
             for context in context_windows:
                 metrics = extract_performance_metrics(context)
                 for metric_name, values in metrics.items():
@@ -393,154 +360,7 @@ def extract_relationships(text: str, entities: List[Dict[str, str]]) -> List[Dic
     
     return relationships
 
-# =============================================================================
-# UTILITY FUNCTIONS  
-# =============================================================================
 
-def clean_text_for_vector_db(text: str) -> str:
-    """Clean text for optimal vector embedding"""
-    # Remove excessive whitespace
-    text = re.sub(r'\s+', ' ', text)
-    # Remove special markdown characters but preserve structure
-    text = re.sub(r'[#*_`]', '', text)
-    # Remove URLs and email addresses
-    text = re.sub(r'http[s]?://\S+', '', text)
-    text = re.sub(r'\S+@\S+', '', text)
-    return text.strip()
-
-def chunk_text(text: str, section_name: str, chunk_size: int = 512, overlap: int = 50) -> List[str]:
-    """Split text into overlapping chunks with section context"""
-    words = text.split()
-    chunks = []
-    
-    for i in range(0, len(words), chunk_size - overlap):
-        chunk_words = words[i:i + chunk_size]
-        chunk_text = ' '.join(chunk_words)
-        
-        if len(chunk_text.strip()) > 100:  # Minimum meaningful chunk
-            chunks.append(f"[{section_name}] {chunk_text.strip()}")
-    
-    return chunks
-
-def find_context_windows(text: str, term: str, window_size: int = 200) -> List[str]:
-    """Find text windows around specific terms"""
-    windows = []
-    term_positions = [m.start() for m in re.finditer(re.escape(term), text, re.I)]
-    
-    for pos in term_positions:
-        start = max(0, pos - window_size)
-        end = min(len(text), pos + window_size)
-        windows.append(text[start:end])
-    
-    return windows
-
-def is_valid_metric(value_str: str) -> bool:
-    """Validate metric values are reasonable"""
-    try:
-        value = float(value_str)
-        return 0 <= value <= 100 or 0 <= value <= 1  # Percentage or decimal
-    except:
-        return False
-
-def remove_duplicate_entities(entities: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """Remove duplicate entities based on type and value"""
-    unique = []
-    seen = set()
-    
-    for entity in entities:
-        key = f"{entity['type']}_{entity['value']}"
-        if key not in seen:
-            seen.add(key)
-            unique.append(entity)
-    
-    return unique
-
-def determine_document_type(text: str) -> str:
-    """Determine specific document type for better processing"""
-    medical_score = len(re.findall(r'\b(patient|clinical|medical|diagnosis|radiograph)\b', text, re.I))
-    research_score = len(re.findall(r'\b(abstract|methodology|results|discussion|conclusion)\b', text, re.I))
-    
-    if medical_score > 20 and research_score > 5:
-        return "medical_research"
-    elif medical_score > 10:
-        return "clinical_document"
-    elif research_score > 5:
-        return "research_paper"
-    else:
-        return "general_mixed"
-
-# =============================================================================
-# DATABASE CONNECTION INTERFACES (COMMENTED OUT FOR TESTING)
-# =============================================================================
-
-# class QdrantVectorDB:
-#     """Production-ready Qdrant interface for semantic search"""
-#     
-#     def __init__(self, host: str = "localhost", port: int = 6333, api_key: str = None):
-#         self.host = host
-#         self.port = port
-#         self.api_key = api_key
-#         self.collection_name = "medical_documents"
-#         # TODO: from qdrant_client import QdrantClient
-#         # self.client = QdrantClient(host=host, port=port, api_key=api_key)
-#         
-#     def ingest_narrative_chunks(self, content: ExtractedContent, batch_size: int = 100):
-#         """Ingest narrative chunks with optimized batching"""
-#         chunks = content.narrative_chunks
-#         metadata = content.metadata
-#         
-#         print(f"📊 Ingesting {len(chunks)} narrative chunks to Qdrant...")
-#         
-#         for i in range(0, len(chunks), batch_size):
-#             batch = chunks[i:i + batch_size]
-#             print(f"   Batch {i//batch_size + 1}: Processing {len(batch)} chunks")
-#             
-#             # TODO: Generate embeddings and upsert
-#             # embeddings = generate_embeddings(batch)
-#             # points = create_qdrant_points(batch, embeddings, metadata)
-#             # self.client.upsert(collection_name=self.collection_name, points=points)
-#         
-#         print(f"✅ Vector ingestion complete: {len(chunks)} chunks")
-
-# class Neo4jGraphDB:
-#     """Production-ready Neo4j interface for structured relationships"""
-#     
-#     def __init__(self, uri: str = "bolt://localhost:7687", user: str = "neo4j", password: str = "password"):
-#         self.uri = uri
-#         self.user = user
-#         self.password = password
-#         # TODO: from neo4j import GraphDatabase
-#         # self.driver = GraphDatabase.driver(uri, auth=(user, password))
-#         
-#     def ingest_structured_data(self, content: ExtractedContent):
-#         """Ingest structured data with optimized graph queries"""
-#         metadata = content.metadata
-#         structured = content.structured_data
-#         entities = content.entities
-#         relationships = content.relationships
-#         
-#         print(f"🕸️  Ingesting structured data to Neo4j for: {metadata['file_name']}")
-#         
-#         # Create document node
-#         print("   Creating document node...")
-#         # TODO: Execute Cypher queries
-#         
-#         # Create metric nodes
-#         metrics = structured.get("performance_metrics", {})
-#         print(f"   Creating {sum(len(v) for v in metrics.values())} metric nodes...")
-#         
-#         # Create entity nodes  
-#         print(f"   Creating {len(entities)} entity nodes...")
-#         
-#         # Create relationships
-#         print(f"   Creating {len(relationships)} relationships...")
-#         
-#         print(f"✅ Graph ingestion complete for {metadata['file_name']}")
-#         
-#     def close(self):
-#         """Close database connection"""
-#         # TODO: self.driver.close()
-#         print("🔒 Neo4j connection closed")
 
 # =============================================================================
 # UNIFIED INGESTION PIPELINE
@@ -641,6 +461,77 @@ def ingest_mixed_document(file_path: str) -> Dict[str, Any]:
         import traceback
         traceback.print_exc()
         return {"status": "error", "error": str(e)}
+    
+
+
+# class QdrantVectorDB:
+#     """Production-ready Qdrant interface for semantic search"""
+#     
+#     def __init__(self, host: str = "localhost", port: int = 6333, api_key: str = None):
+#         self.host = host
+#         self.port = port
+#         self.api_key = api_key
+#         self.collection_name = "medical_documents"
+#         # TODO: from qdrant_client import QdrantClient
+#         # self.client = QdrantClient(host=host, port=port, api_key=api_key)
+#         
+#     def ingest_narrative_chunks(self, content: ExtractedContent, batch_size: int = 100):
+#         """Ingest narrative chunks with optimized batching"""
+#         chunks = content.narrative_chunks
+#         metadata = content.metadata
+#         
+#         print(f"📊 Ingesting {len(chunks)} narrative chunks to Qdrant...")
+#         
+#         for i in range(0, len(chunks), batch_size):
+#             batch = chunks[i:i + batch_size]
+#             print(f"   Batch {i//batch_size + 1}: Processing {len(batch)} chunks")
+#             
+#             # TODO: Generate embeddings and upsert
+#             # embeddings = generate_embeddings(batch)
+#             # points = create_qdrant_points(batch, embeddings, metadata)
+#             # self.client.upsert(collection_name=self.collection_name, points=points)
+#         
+#         print(f"✅ Vector ingestion complete: {len(chunks)} chunks")
+
+# class Neo4jGraphDB:
+#     """Production-ready Neo4j interface for structured relationships"""
+#     
+#     def __init__(self, uri: str = "bolt://localhost:7687", user: str = "neo4j", password: str = "password"):
+#         self.uri = uri
+#         self.user = user
+#         self.password = password
+#         # TODO: from neo4j import GraphDatabase
+#         # self.driver = GraphDatabase.driver(uri, auth=(user, password))
+#         
+#     def ingest_structured_data(self, content: ExtractedContent):
+#         """Ingest structured data with optimized graph queries"""
+#         metadata = content.metadata
+#         structured = content.structured_data
+#         entities = content.entities
+#         relationships = content.relationships
+#         
+#         print(f"🕸️  Ingesting structured data to Neo4j for: {metadata['file_name']}")
+#         
+#         # Create document node
+#         print("   Creating document node...")
+#         # TODO: Execute Cypher queries
+#         
+#         # Create metric nodes
+#         metrics = structured.get("performance_metrics", {})
+#         print(f"   Creating {sum(len(v) for v in metrics.values())} metric nodes...")
+#         
+#         # Create entity nodes  
+#         print(f"   Creating {len(entities)} entity nodes...")
+#         
+#         # Create relationships
+#         print(f"   Creating {len(relationships)} relationships...")
+#         
+#         print(f"✅ Graph ingestion complete for {metadata['file_name']}")
+#         
+#     def close(self):
+#         """Close database connection"""
+#         # TODO: self.driver.close()
+#         print("🔒 Neo4j connection closed")    
 
 # =============================================================================
 # TEST RUNNER

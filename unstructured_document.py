@@ -12,6 +12,7 @@ class UnstructuredDocumentIngestor:
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         self.qdrant_client = self._setup_qdrant()
         self.collection_name = "medical_research_doc"
+        self._collection_initialized = False
 
     def _setup_qdrant(self) -> QdrantClient:
         """Setup Qdrant client"""
@@ -117,12 +118,15 @@ class UnstructuredDocumentIngestor:
         if not sections_found:
             print("   📄 No standard sections found, using adaptive chunking...")
             clean_full_text = UtilityFunctions.clean_text_for_vector_db(text)
-            paragraphs = [p.strip() for p in text.split('\n\n') if len(p.strip()) > 100]
+            # Split into paragraphs and filter out short ones
+            paragraphs = [p.strip() for p in clean_full_text.split('\n\n') if len(p.strip()) > 100]
             if paragraphs:
-                for i, paragraph in enumerate(paragraphs[:10]):
-                    chunked = UtilityFunctions.chunk_text(paragraph, f"content_block_{i+1}")
-                    chunks.extend(chunked)
+                for i, paragraph in enumerate(paragraphs):
+                    # Further chunk each paragraph if it's long
+                    for chunk in UtilityFunctions.chunk_text(paragraph, f"paragraph_{i+1}"):
+                        chunks.append(chunk)
             else:
+                # Fallback: chunk the whole cleaned text
                 chunks = UtilityFunctions.chunk_text(clean_full_text, "general_content")
 
         print(f"   📝 Extracted {len(chunks)} narrative chunks from {len(sections_found)} sections")
@@ -134,17 +138,22 @@ class UnstructuredDocumentIngestor:
         metadata = content.metadata
 
         print(f"📊 Ingesting {len(chunks)} narrative chunks to Qdrant...")
-        self.create_collection()
+        # Only create collection if not already initialized
+        if not self._collection_initialized:
+            self.create_collection()
+            self._collection_initialized = True
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
             print(f"   Batch {i//batch_size + 1}: Processing {len(batch)} chunks")
-            # update metadata word_count
-            metadata["word_count"] = sum(len(chunk.split()) for chunk in batch)
+
+            # Set word_count in metadata to the sum of words in this batch
+            batch_metadata = metadata.copy()
+            batch_metadata["word_count"] = sum(len(chunk.split()) for chunk in batch)
 
             # Generate embeddings for the batch
             embeddings = self.embedding_model.encode(batch, show_progress_bar=False, convert_to_numpy=True)
             # Create Qdrant points
-            points = UtilityFunctions.create_qdrant_points(batch, embeddings, metadata)
+            points = UtilityFunctions.create_qdrant_points(batch, embeddings, batch_metadata)
 
             self.qdrant_client.upsert(collection_name=self.collection_name, points=points)
 
@@ -153,41 +162,21 @@ class UnstructuredDocumentIngestor:
     
 
     def create_collection(self):
-        """Ensure Qdrant collection and payload index exist, and clear data if collection exists."""
-        from qdrant_client.http.exceptions import UnexpectedResponse
+        """Ensure Qdrant collection exists; do not delete if already present."""
         try:
             # Check if collection exists
-            collection_exists = False
             try:
                 self.qdrant_client.get_collection(self.collection_name)
-                collection_exists = True
+                print(f"✓ Collection already exists: {self.collection_name}")
+                return
             except Exception:
-                collection_exists = False
+                pass
 
-            if collection_exists:
-                # Delete the collection entirely
-                self.qdrant_client.delete_collection(collection_name=self.collection_name)
-                print(f"✓ Deleted existing collection: {self.collection_name}")
-
-            # Always create the collection (either it didn't exist, or we just deleted it)
+            # Create the collection if it does not exist
             self.qdrant_client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=384, distance=Distance.COSINE)
             )
             print(f"✓ Created medical collection: {self.collection_name}")
-
-            # # Always ensure payload index exists for quality_score
-            # try:
-            #     self.qdrant_client.create_payload_index(
-            #         collection_name=self.collection_name,
-            #         field_name="quality_score",
-            #         type="float"
-            #     )
-            #     print(f"✓ Ensured payload index for 'quality_score' exists.")
-            # except UnexpectedResponse as e:
-            #     if "already exists" in str(e):
-            #         print(f"Payload index for 'quality_score' already exists.")
-            #     else:
-            #         print(f"Error creating payload index: {e}")
         except Exception as e:
             print(f"Collection error: {e}")

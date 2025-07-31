@@ -17,7 +17,6 @@ import re
 import os
 import pymupdf4llm
 from pathlib import Path
-from unified_ingestion_pipeline import ingest_mixed_document
 # File extension constants for document classification
 STRUCTURED_EXTENSIONS = [".csv", ".xlsx", ".xls", ".xml", ".json", ".yaml", ".yml"]
 UNSTRUCTURED_EXTENSIONS = [".txt"]
@@ -123,10 +122,10 @@ def classify_document(file_path):
 def has_significant_tables_or_data(content):
     """Check if document has substantial structured data"""
     table_indicators = [
-        len(re.findall(r'\|\s*\w+\s*\|', content)) > 5,  # Table borders
+        #len(re.findall(r'\|\s*\w+\s*\|', content)) > 5,  # Table borders
         len(re.findall(r'\t\w+\t', content)) > 10,        # Tab-separated
         len(re.findall(r'\d+\.\d+\s*mg', content)) > 5,   # Medical measurements
-        len(re.findall(r'Table\s+\d+[:.]', content, re.I)) > 2,  # Table references
+        len(re.findall(r'Table\s+\d+[:.]', content, re.I)) > 4,  # Table references
         len(re.findall(r'Figure\s+\d+[:.]', content, re.I)) > 3,  # Figure references
         len(re.findall(r'\d+\.\d+\s*[%]', content)) > 5,  # Percentages
         len(re.findall(r'p\s*[<>=]\s*0\.\d+', content, re.I)) > 3,  # Statistical p-values
@@ -174,18 +173,18 @@ def analyze_repository_documents(directory_path):
     for file_path in directory.iterdir():
         if file_path.is_file():
             try:
-                classification = classify_document(str(file_path))
+                #classification = classify_document(str(file_path))
                 file_size = file_path.stat().st_size
                 
                 results[file_path.name] = {
-                    "classification": classification,
+                    #"classification": classification,
                     "extension": file_path.suffix.lower(),
                     "size_bytes": file_size,
                     "path": str(file_path)
                 }
             except Exception as e:
                 results[file_path.name] = {
-                    "classification": "error",
+                    #"classification": "error",
                     "error": str(e),
                     "path": str(file_path)
                 }
@@ -213,7 +212,9 @@ if __name__ == "__main__":
         print()
 
         if classification == 'mixed':
-            result =ingest_mixed_document(info['path'])
+            from mixed_document import MixedDocumentIngestor
+            mixed_ingestor = MixedDocumentIngestor()
+            result = mixed_ingestor.ingest_mixed_document(info['path'])
             print(f"   ✅ Ingested mixed document: {info['path']}")
             # Display final summary
             print("\n📋 FINAL PARSING SUMMARY:")

@@ -63,3 +63,52 @@ class UtilityFunctions:
             return "research_paper"
         else:
             return "general_mixed"
+    
+    @staticmethod
+    def save_extracted_content(folder: str, content: str, output_file: str):
+        """
+        Save all extracted content to a markdown file in the extracted_content folder.
+        Always postfix 'extracted_unstructured.md' to the output_file name.
+        """
+        import os
+        from pathlib import Path
+
+        #folder = "extracted_content"
+        os.makedirs(folder, exist_ok=True)
+
+        # Remove any path from output_file, just use the base name
+        base_name = os.path.basename(output_file)
+        file_path = os.path.join(folder, base_name + "_extracted_unstructured.md")
+
+        print(f"Saving extracted content to {file_path}...")
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write("# PDF Content Extraction Report\n\n")
+            f.write("## Document Text\n\n")
+            f.write(content)
+            f.write("\n\n")
+        print(f"✓ Content saved to {file_path}")
+
+
+    @staticmethod
+    def create_qdrant_points(texts: list, embeddings, metadata: dict) -> list:
+        """
+        Create Qdrant PointStructs for a batch of texts and their embeddings.
+        Each point includes the text, its embedding, and associated metadata.
+        """
+        from qdrant_client.models import PointStruct
+        import uuid
+        points = []
+        for idx, (text, vector) in enumerate(zip(texts, embeddings)):
+            point_id = str(uuid.uuid4())
+            payload = {
+                "text": text,
+                "metadata": metadata
+            }
+            points.append(
+                PointStruct(
+                    id=point_id,
+                    vector=vector.tolist() if hasattr(vector, 'tolist') else list(vector),
+                    payload=payload
+                )
+            )
+        return points   

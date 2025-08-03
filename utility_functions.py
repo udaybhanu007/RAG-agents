@@ -2,6 +2,26 @@ import re
 from typing import Dict, List
 
 class UtilityFunctions:
+
+    @staticmethod
+    def create_qdrant_points(texts, embeddings, metadatas):
+        """
+        Create Qdrant points for a batch of texts, embeddings, and metadatas.
+        Each point includes a UUID id, the embedding vector, and the payload (metadata + chunk).
+        """
+        import uuid
+        points = []
+        for text, embedding, metadata in zip(texts, embeddings, metadatas):
+            combined_metadata = {**metadata, "chunk": text}
+            point_id = str(uuid.uuid4())
+            point = {
+                "id": point_id,
+                "vector": embedding,
+                "payload": combined_metadata,
+            }
+            points.append(point)
+        return points
+    
     @staticmethod
     def clean_text_for_vector_db(text: str) -> str:
         """Clean text for optimal vector embedding"""
@@ -11,16 +31,16 @@ class UtilityFunctions:
         text = re.sub(r'\S+@\S+', '', text)
         return text.strip()
 
-    @staticmethod
-    def chunk_text(text: str, section_name: str, chunk_size: int = 512, overlap: int = 50) -> List[str]:
-        words = text.split()
-        chunks = []
-        for i in range(0, len(words), chunk_size - overlap):
-            chunk_words = words[i:i + chunk_size]
-            chunk_text = ' '.join(chunk_words)
-            if len(chunk_text.strip()) > 100:
-                chunks.append(f"[{section_name}] {chunk_text.strip()}")
-        return chunks
+    # @staticmethod
+    # def chunk_text(text: str, section_name: str, chunk_size: int = 512, overlap: int = 50) -> List[str]:
+    #     words = text.split()
+    #     chunks = []
+    #     for i in range(0, len(words), chunk_size - overlap):
+    #         chunk_words = words[i:i + chunk_size]
+    #         chunk_text = ' '.join(chunk_words)
+    #         if len(chunk_text.strip()) > 100:
+    #             chunks.append(f"[{section_name}] {chunk_text.strip()}")
+    #     return chunks
 
     @staticmethod
     def find_context_windows(text: str, term: str, window_size: int = 200) -> List[str]:
@@ -64,51 +84,59 @@ class UtilityFunctions:
         else:
             return "general_mixed"
     
+    # @staticmethod
+    # def save_extracted_content(folder: str, content: str, output_file: str):
+    #     """
+    #     Save all extracted content to a markdown file in the extracted_content folder.
+    #     Always postfix 'extracted_unstructured.md' to the output_file name.
+    #     """
+    #     import os
+    #     from pathlib import Path
+
+    #     #folder = "extracted_content"
+    #     os.makedirs(folder, exist_ok=True)
+
+    #     # Remove any path from output_file, just use the base name
+    #     base_name = os.path.basename(output_file)
+    #     file_path = os.path.join(folder, base_name + "_extracted_unstructured.md")
+
+    #     print(f"Saving extracted content to {file_path}...")
+    #     with open(file_path, 'w', encoding='utf-8') as f:
+    #         f.write("# PDF Content Extraction Report\n\n")
+    #         f.write("## Document Text\n\n")
+    #         f.write(content)
+    #         f.write("\n\n")
+    #     print(f"✓ Content saved to {file_path}")
+
+   
+    
     @staticmethod
-    def save_extracted_content(folder: str, content: str, output_file: str):
-        """
-        Save all extracted content to a markdown file in the extracted_content folder.
-        Always postfix 'extracted_unstructured.md' to the output_file name.
-        """
-        import os
-        from pathlib import Path
-
-        #folder = "extracted_content"
-        os.makedirs(folder, exist_ok=True)
-
-        # Remove any path from output_file, just use the base name
-        base_name = os.path.basename(output_file)
-        file_path = os.path.join(folder, base_name + "_extracted_unstructured.md")
-
-        print(f"Saving extracted content to {file_path}...")
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write("# PDF Content Extraction Report\n\n")
-            f.write("## Document Text\n\n")
-            f.write(content)
-            f.write("\n\n")
-        print(f"✓ Content saved to {file_path}")
-
+    def contains_citation(text: str) -> bool:
+        """Check if the text contains typical citation patterns."""
+        if not text:
+            return False
+        # Common patterns: [1], (Smith et al., 2020), [12,13], (2020), etc.
+        citation_patterns = [
+            r'\[\d+(,\s*\d+)*\]',  # [1] or [1, 2]
+            r'\([A-Za-z][^\)]*et al\.,? \d{4}\)',  # (Smith et al., 2020)
+            r'\([A-Za-z][^\)]*, \d{4}\)',  # (Smith, 2020)
+            r'\(\d{4}\)'  # (2020)
+        ]
+        return any(re.search(p, text) for p in citation_patterns)
 
     @staticmethod
-    def create_qdrant_points(texts: list, embeddings, metadata: dict) -> list:
-        """
-        Create Qdrant PointStructs for a batch of texts and their embeddings.
-        Each point includes the text, its embedding, and associated metadata.
-        """
-        from qdrant_client.models import PointStruct
-        import uuid
-        points = []
-        for idx, (text, vector) in enumerate(zip(texts, embeddings)):
-            point_id = str(uuid.uuid4())
-            payload = {
-                "text": text,
-                "metadata": metadata
-            }
-            points.append(
-                PointStruct(
-                    id=point_id,
-                    vector=vector.tolist() if hasattr(vector, 'tolist') else list(vector),
-                    payload=payload
-                )
-            )
-        return points   
+    def remove_citations(text: str) -> str:
+        """Remove common citation patterns from the text."""
+        if not text:
+            return text
+        # Remove [1], [1,2], [12, 13]
+        text = re.sub(r'\[\d+(,\s*\d+)*\]', '', text)
+        # Remove (Smith et al., 2020)
+        text = re.sub(r'\([A-Za-z][^\)]*et al\.,? \d{4}\)', '', text)
+        # Remove (Smith, 2020)
+        text = re.sub(r'\([A-Za-z][^\)]*, \d{4}\)', '', text)
+        # Remove (2020)
+        text = re.sub(r'\(\d{4}\)', '', text)
+        # Remove extra spaces left by removals
+        text = re.sub(r'\s{2,}', ' ', text)
+        return text

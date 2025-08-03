@@ -1,7 +1,7 @@
 import re
 import json
 import pymupdf4llm
-import pdfplumber
+#import pdfplumber
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
@@ -12,25 +12,33 @@ class StructuredDocumentIngestor:
     def __init__(self):
         pass
 
-    def ingest_structured_document(self, file_path: str, content: str = None) -> dict:
+    def ingest_structured_document(self, file_path: str, content: str):
         """
-        Ingest a structured document (CSV, Excel, XML, JSON, etc.).
-        This is a placeholder implementation. Replace with actual logic as needed.
-
-        Args:
-            file_path (str): Path to the structured document file.
-            content (str, optional): Extracted content of the file, if available.
-
-        Returns:
-            dict: Ingestion result.
+        Ingest a structured document (CSV, Excel, XML, JSON, etc.) and return ExtractedContent.
         """
         print(f"[Structured Ingestion] Processing: {file_path}")
-        # Example: parse CSV, Excel, or JSON here
-        return {
+        # For demonstration, treat the content as the full text and parse entities, relationships, and structured data
+        full_text = content or ""
+        tables = []  # You can add logic to extract tables from content if needed
+        structured_data = self.extract_structured_for_graph_db(full_text, tables)
+        entities = self.extract_entities(full_text)
+        relationships = self.extract_relationships(full_text, entities)
+        metadata = {
             "file_path": file_path,
-            "status": "structured_ingestion_complete",
-            "content_sample": content[:500] if content else None
+            "file_name": Path(file_path).name,
+            "classification": "structured",
+            "document_type": UtilityFunctions.determine_document_type(full_text),
+            "processing_timestamp": "2025-07-29T00:00:00Z"
         }
+        from modelclass import ExtractedContent
+        return ExtractedContent(
+            full_text=full_text,
+            unstructured_chunks=[],
+            structured_data=structured_data,
+            entities=entities,
+            relationships=relationships,
+            metadata=metadata
+        )
 
 
     ### Gunjan properly validate this method with all the tables in the .pdf
@@ -169,7 +177,7 @@ class StructuredDocumentIngestor:
                 if str(val).strip():
                     row_items.append(f"{col}: {val}")
             if row_items:
-                table_text += f"Row {idx + 1}: {' | '.join(row_items)}\n"
+                table_text += f"Row {idx + 1}: {' | '.join(row_items)}\n" # type: ignore
         return table_text
 
     def extract_structured_for_graph_db(self, text: str, tables: List[Dict]) -> Dict[str, Any]:

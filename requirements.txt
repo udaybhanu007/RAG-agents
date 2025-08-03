@@ -1,0 +1,24 @@
+# Core scientific and data processing libraries
+pandas
+numpy
+
+# PDF and document processing
+PyMuPDF
+pymupdf4llm
+Pillow
+
+# Machine learning and embeddings
+sentence-transformers
+
+# Qdrant vector database client
+qdrant-client
+
+# Environment variable management
+python-dotenv
+
+# For Excel/CSV/JSON/XML handling (pandas covers most)
+openpyxl
+xlrd
+
+# For docx/Word document support (referenced in classify_document.py)
+python-docx

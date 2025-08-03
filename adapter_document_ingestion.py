@@ -1,42 +1,36 @@
-# adapter_document_ingestion.py
 from classify_document import classify_document, analyze_repository_documents
 from mixed_document import MixedDocumentIngestor
 from structured_document import StructuredDocumentIngestor
 from unstructured_document import UnstructuredDocumentIngestor
 
-
-
-
-
 class DocumentIngestionAdapter:
     """
     Adapter class to unify ingestion for mixed, structured, and unstructured documents.
     """
+    def __init__(self, mixed_ingestor=None, structured_ingestor=None, unstructured_ingestor=None):
+        self.mixed_ingestor = mixed_ingestor or MixedDocumentIngestor()
+        self.structured_ingestor = structured_ingestor or StructuredDocumentIngestor()
+        self.unstructured_ingestor = unstructured_ingestor or UnstructuredDocumentIngestor()
 
-    def __init__(self):
-        self.mixed_ingestor = MixedDocumentIngestor()
-        self.structured_ingestor = StructuredDocumentIngestor()
-        self.unstructured_ingestor = UnstructuredDocumentIngestor()
-
-    def ingest(self, file_path: str) -> dict:
+    def process_document(self, file_path: str) -> dict:
         """
         Classifies the document and ingests it based on its type.
         """
         doc_type, content = classify_document(file_path)
+        print(f"Document type for {file_path}: {doc_type}")
         if doc_type == "mixed":
             ingestion_result = self.mixed_ingestor.ingest_mixed_document(file_path, content)
         elif doc_type == "structured":
-            ingestion_result = self.structured_ingestor.ingest_structured_document(file_path, content)
+            ingestion_result = self.structured_ingestor.ingest_structured_document(file_path, content) # type: ignore
         elif doc_type == "unstructured":
-            ingestion_result = self.unstructured_ingestor.ingest_unstructured_document(file_path, "un-structured", content)
+            ingestion_result = self.unstructured_ingestor.ingest_unstructured_document(file_path, content) # type: ignore
         else:
             raise ValueError(f"Unknown document type: {doc_type}")
         return {"classification": doc_type, "content": content, "ingestion_result": ingestion_result}
 
     def analyze_directory(self, directory_path: str) -> dict:
         """
-        Analyzes all documents in the given directory and classifies them.
-       
+        Analyzes all documents in the given directory and classifies them.       
         """
         return analyze_repository_documents(directory_path)
 
@@ -55,13 +49,12 @@ def ingest_directory(adapter: DocumentIngestionAdapter, directory: str):
         file_path = info["path"]
         print(f"\nIngesting {filename} ({file_path})...")
         try:
-            ingest_result = adapter.ingest(file_path)
-            print(f"Ingestion result for {filename}: {ingest_result}")
+            ingest_result = adapter.process_document(file_path)
+            print(f"Ingestion successfully done for {filename}")
         except Exception as e:
             print(f"Error ingesting {filename}: {e}")
 
 
 if __name__ == "__main__":
-    adapter = DocumentIngestionAdapter()   
-    # Ingest all files in a directory
+    adapter = DocumentIngestionAdapter()     
     ingest_directory(adapter, "docs")

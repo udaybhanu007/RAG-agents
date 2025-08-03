@@ -3,7 +3,7 @@ Generic Document Classification System
 
 This module provides a unified approach to classify documents in a knowledge repository as:
 - "structured": Data-heavy documents (CSV, Excel, XML, JSON, or documents with primarily tables)
-- "unstructured": Text-heavy documents (plain text, or documents with primarily narrative content)  
+- "unstructured": Text-heavy documents (plain text, or documents with primarily narrative content)
 - "mixed": Documents with both structured data and narrative text (research papers, reports)
 
 Key Features:
@@ -17,44 +17,60 @@ import re
 import os
 import pymupdf4llm
 from pathlib import Path
+from pdf_markdown import pdf_markdown
+
 # File extension constants for document classification
 STRUCTURED_EXTENSIONS = [".csv", ".xlsx", ".xls", ".xml", ".json", ".yaml", ".yml"]
 UNSTRUCTURED_EXTENSIONS = [".txt"]
 MIXED_POTENTIAL_EXTENSIONS = [".pdf", ".doc", ".docx", ".rtf", ".odt"]
+# Constants for folder name
+EXTRACTED_CONTENT_FOLDER = "extracted_content/"
 
 def get_file_extension(file_path):
     """Extract file extension from file path"""
     return Path(file_path).suffix.lower()
 
-def extract_content_sample(file_path, max_chars=5000):
-    """Extract sample content from file for analysis"""
+
+def extract_text_content(file_path, max_chars=5000):
+    """Extract text content from a file."""
     try:
-        file_path = Path(file_path)
-        if not file_path.exists():
-            return ""
-        
-        extension = file_path.suffix.lower()
-        
-        if extension == ".txt":
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return f.read(max_chars)
-        elif extension == ".pdf":
-            markdown_text = pymupdf4llm.to_markdown(file_path)
-            return markdown_text        
-        elif extension in [".doc", ".docx"]:
-            return f"Word document: {file_path.name} - Content extraction would require python-docx library"
-        else:
-            # For other text-based files, try to read as text
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return f.read(max_chars)
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read(max_chars)
     except Exception as e:
         return f"Error reading file {file_path}: {str(e)}"
+
+def extract_pdf_content(file_path):
+    """Extract pdf content from a file."""
+    try:
+        return  pdf_markdown(file_path)      
+    except Exception as e:
+        return f"Error reading file {file_path}: {str(e)}"
+
+
+def extract_content_file(file_path, max_chars=5000):
+    """Extract sample content from file for analysis"""
+    file_path = Path(file_path)
+    if not file_path.exists():
+        return ""
+
+    extension = file_path.suffix.lower()
+
+    if extension == ".txt":
+        return extract_text_content(file_path, max_chars)
+    elif extension == ".pdf":
+        return extract_pdf_content(file_path)       
+    elif extension in [".doc", ".docx"]:
+        return f"Word document: {file_path.name} - Content extraction would require python-docx library"
+    else:
+        # For other text-based files, try to read as text
+        return extract_text_content(file_path, max_chars)
+
 
 def analyze_content_structure(content):
     """
     Analyze document content to determine structure type
     Works for PDFs, Word docs, and any text-based content
-    
+
     Returns:
     - "structured": Primarily tables, data, forms
     - "unstructured": Primarily narrative text
@@ -62,7 +78,7 @@ def analyze_content_structure(content):
     """
     has_tables = has_significant_tables_or_data(content)
     has_narrative = has_significant_narrative_text(content)
-    
+
     # Check for research paper indicators
     research_indicators = [
         len(re.findall(r'(abstract|introduction|methodology|results|discussion|conclusion)', content, re.I)) >= 3,
@@ -70,17 +86,17 @@ def analyze_content_structure(content):
         len(re.findall(r'\[\d+\]|\(\d{4}\)', content)) > 5,  # Citation patterns
         len(re.findall(r'(doi|pmid|issn)', content, re.I)) > 0,  # Academic identifiers
     ]
-    
+
     # Check for medical/clinical indicators
     medical_indicators = [
         len(re.findall(r'(chest x-ray|radiograph|ct scan|mri|ultrasound)', content, re.I)) > 0,
         len(re.findall(r'(pneumonia|diagnosis|treatment|patient|clinical)', content, re.I)) > 5,
         len(re.findall(r'(sensitivity|specificity|accuracy|auc)', content, re.I)) > 0,
     ]
-    
+
     is_research_paper = any(research_indicators)
     is_medical_content = any(medical_indicators)
-    
+
     # Classification logic
     if has_tables and has_narrative:
         return "mixed"  # Documents with both data tables and narrative
@@ -93,6 +109,7 @@ def analyze_content_structure(content):
     else:
         return "unstructured"  # Default for unclear cases
 
+
 def classify_document(file_path):
     """
     Generic document classification for any document type
@@ -100,9 +117,9 @@ def classify_document(file_path):
     classification: "structured", "unstructured", or "mixed"
     content: extracted content sample (str)
     """
-    extension = get_file_extension(file_path).lower()
-    content = extract_content_sample(file_path, max_chars=5000)
     
+    content = extract_content_file(file_path, max_chars=5000)
+    extension = get_file_extension(file_path).lower()
     # Special healthcare format handling
     if extension in [".hl7", ".fhir", ".cda", ".ccr", ".ccd"]:
         return "mixed", content
@@ -119,19 +136,21 @@ def classify_document(file_path):
     else:
         return analyze_content_structure(content), content
 
+
 def has_significant_tables_or_data(content):
     """Check if document has substantial structured data"""
     table_indicators = [
-        #len(re.findall(r'\|\s*\w+\s*\|', content)) > 5,  # Table borders
-        len(re.findall(r'\t\w+\t', content)) > 10,        # Tab-separated
-        len(re.findall(r'\d+\.\d+\s*mg', content)) > 5,   # Medical measurements
+        # len(re.findall(r'\|\s*\w+\s*\|', content)) > 5,  # Table borders
+        len(re.findall(r'\t\w+\t', content)) > 10,  # Tab-separated
+        len(re.findall(r'\d+\.\d+\s*mg', content)) > 5,  # Medical measurements
         len(re.findall(r'Table\s+\d+[:.]', content, re.I)) > 4,  # Table references
         len(re.findall(r'Figure\s+\d+[:.]', content, re.I)) > 3,  # Figure references
         len(re.findall(r'\d+\.\d+\s*[%]', content)) > 5,  # Percentages
         len(re.findall(r'p\s*[<>=]\s*0\.\d+', content, re.I)) > 3,  # Statistical p-values
-        len(re.findall(r'\d+\s*±\s*\d+', content)) > 3,   # Plus-minus statistics
+        len(re.findall(r'\d+\s*±\s*\d+', content)) > 3,  # Plus-minus statistics
     ]
     return any(table_indicators)
+
 
 def has_significant_narrative_text(content):
     """Check if document contains substantial narrative/unstructured text"""
@@ -147,17 +166,18 @@ def has_significant_narrative_text(content):
         r'we\s+(observed|found|discovered|analyzed)',  # Research narrative
         r'(results|findings)\s+(showed|demonstrated|indicated)',  # Results narrative
     ]
-    
+
     narrative_score = sum(len(re.findall(pattern, content, re.I)) for pattern in narrative_patterns)
-    
+
     # Also check for paragraph-like structure
     paragraph_indicators = [
         len(re.findall(r'\.\s+[A-Z]', content)) > 10,  # Sentence endings followed by capitals
         len(content.split()) > 200,  # Substantial word count
         len(re.findall(r'\b(the|and|or|but|however|therefore|moreover)\b', content, re.I)) > 20  # Common connecting words
     ]
-    
+
     return narrative_score > 2 or any(paragraph_indicators)
+
 
 def analyze_repository_documents(directory_path):
     """
@@ -165,106 +185,28 @@ def analyze_repository_documents(directory_path):
     """
     results = {}
     directory = Path(directory_path)
-    
+
     if not directory.exists():
         return {"error": f"Directory {directory_path} does not exist"}
-    
+
     # Get all files in the directory
     for file_path in directory.iterdir():
         if file_path.is_file():
-            try:
-                #classification = classify_document(str(file_path))
+            try:               
                 file_size = file_path.stat().st_size
-                
                 results[file_path.name] = {
-                    #"classification": classification,
+                    # "classification": classification,
                     "extension": file_path.suffix.lower(),
                     "size_bytes": file_size,
                     "path": str(file_path)
                 }
             except Exception as e:
                 results[file_path.name] = {
-                    #"classification": "error",
+                    # "classification": "error",
                     "error": str(e),
                     "path": str(file_path)
                 }
-    
+
     return results
 
 
-# Test the classification system
-if __name__ == "__main__":
-
-    directory_path = "docs"
-    results = analyze_repository_documents(directory_path)
-    #loop results
-    for filename, info in results.items():
-        print(f"File: {filename}")
-        if not isinstance(info, dict):
-            print(f"  Error: {info}")
-            continue
-        classification = info['classification']
-        if isinstance(classification, tuple):
-            classification, _ = classification
-        print(f"  Classification: {classification}")
-        print(f"  Size (bytes): {info['size_bytes'] if 'size_bytes' in info else 0}")
-        print(f"  Path: {info['path'] if 'path' in info else ''}")
-        print()
-
-        if classification == 'mixed':
-            from mixed_document import MixedDocumentIngestor
-            mixed_ingestor = MixedDocumentIngestor()
-            result = mixed_ingestor.ingest_mixed_document(info['path'])
-            print(f"   ✅ Ingested mixed document: {info['path']}")
-            # Display final summary
-            print("\n📋 FINAL PARSING SUMMARY:")
-            print("-" * 30)
-            for key, value in result.items():
-                print(f"   {key}: {value}")
-        elif classification == 'structured':
-            print(f"   ✅ Structured document detected: {info['path']}")
-        elif classification == 'unstructured':
-            print(f"   ✅ Unstructured document detected: {info['path']}")
-
-   
-    
-    print("\n=== Test Complete ===")
-
-
-    # def generate_classification_summary(results):
-#     """
-#     Generate a summary of classification results
-#     """
-#     if "error" in results:
-#         return results
-    
-#     summary = {
-#         "total_files": len(results),
-#         "by_classification": {},
-#         "by_extension": {},
-#         "files_by_type": {
-#             "structured": [],
-#             "unstructured": [],
-#             "mixed": [],
-#             "error": []
-#         }
-#     }
-    
-#     for filename, info in results.items():
-#         classification = info.get("classification", "error")
-#         extension = info.get("extension", "unknown")
-        
-#         # Count by classification
-#         summary["by_classification"][classification] = summary["by_classification"].get(classification, 0) + 1
-        
-#         # Count by extension
-#         summary["by_extension"][extension] = summary["by_extension"].get(extension, 0) + 1
-        
-#         # Group files by type
-#         summary["files_by_type"][classification].append({
-#             "filename": filename,
-#             "extension": extension,
-#             "size_bytes": info.get("size_bytes", 0)
-#         })
-    
-#     return summary

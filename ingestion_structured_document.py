@@ -14,7 +14,7 @@ class StructuredDocumentIngestor:
 
     def ingest_structured_document(self, file_path: str, content: str):
         """
-        Ingest a structured document (CSV, Excel, XML, JSON, etc.) and return ExtractedContent.
+        Ingest a structured document (CSV, Excel, XML, JSON, etc.) and return ExtractedResponse.
         """
         print(f"[Structured Ingestion] Processing: {file_path}")
         # For demonstration, treat the content as the full text and parse entities, relationships, and structured data
@@ -30,8 +30,8 @@ class StructuredDocumentIngestor:
             "document_type": UtilityFunctions.determine_document_type(full_text),
             "processing_timestamp": "2025-07-29T00:00:00Z"
         }
-        from modelclass import ExtractedContent
-        return ExtractedContent(
+        from ExtractedResponse import ExtractedResponse
+        return ExtractedResponse(
             full_text=full_text,
             unstructured_chunks=[],
             structured_data=structured_data,

@@ -4,16 +4,19 @@ from typing import Dict, List
 class UtilityFunctions:
 
     @staticmethod
-    def create_qdrant_points(texts, embeddings, metadatas):
+    def create_qdrant_points(texts, embeddings, metadatas, ids=None):
         """
         Create Qdrant points for a batch of texts, embeddings, and metadatas.
-        Each point includes a UUID id, the embedding vector, and the payload (metadata + chunk).
+        Each point includes a unique id (from ids if provided, else uuid4), the embedding vector, and the payload (metadata + chunk).
         """
         import uuid
         points = []
-        for text, embedding, metadata in zip(texts, embeddings, metadatas):
+        if ids is None:
+            ids = [None] * len(texts)
+        for text, embedding, metadata, point_id in zip(texts, embeddings, metadatas, ids):
             combined_metadata = {**metadata, "chunk": text}
-            point_id = str(uuid.uuid4())
+            if point_id is None:
+                point_id = str(uuid.uuid4())
             point = {
                 "id": point_id,
                 "vector": embedding,

@@ -3,11 +3,11 @@ COLLECTION_NAME = "my_medical_research_doc"
 
 
 from typing import List, Dict, Any
-from mixed_document import ExtractedContent
+from ExtractedResponse import ExtractedResponse
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from sentence_transformers import SentenceTransformer
-from chunk_markdown import create_chunk
+from chunking_unstructured import create_chunk
 import os
 try:
     from dotenv import load_dotenv
@@ -61,6 +61,7 @@ class DocumentChunker:
         except ImportError as e:
             print(f"Error importing chunk_markdown.create_chunk: {e}")
             chunks = []
+        import uuid
         for idx, chunk in enumerate(chunks):
             # If chunk is a list (from chunk_markdown), join it to a string
             if isinstance(chunk, list):
@@ -69,11 +70,15 @@ class DocumentChunker:
                 chunk_str = chunk
             from datetime import datetime
             chunk_id = idx + 1
+            # Create a stable unique UUID for the chunk using file_path and chunk_id
+            unique_str = f"{file_path}:{chunk_id}"
+            chunk_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, unique_str))
             chunk_metadata = {
                 "file_path": file_path,
                 "chunk_id": chunk_id,
                 "chunk_word_count": len(chunk_str.split()),
                 "created_date": datetime.now().strftime("%Y-%m-%d"),
+                "id": chunk_uuid
             }
             chunk_list.append({"chunk": chunk_str, "metadata": chunk_metadata})
         print(f"   📝 Extracted {len(chunk_list)} narrative chunks using paragraph-based chunking.")
@@ -97,13 +102,13 @@ class UnstructuredDocumentIngestor:
         self.chunker = DocumentChunker()
         self._collection_initialized = False
 
-    def ingest_unstructured_document(self, file_path: str, content : str, classification: str = "un-structured") -> 'ExtractedContent': # type: ignore
+    def ingest_unstructured_document(self, file_path: str, content : str, classification: str = "un-structured") -> 'ExtractedResponse': # type: ignore
         # Ensure Qdrant collection exists before chunking/ingestion
         self.qdrant_manager = QdrantDBManager(self.api_url, self.api_key, self.collection_name)  # type: ignore
         self.embedding_manager = EmbeddingManager()      
         chunk_list = self.chunker.extract_chunks(file_path, content)
         # For now, full_text is empty, but you can extract and pass the actual text if needed
-        unstructured = ExtractedContent(
+        unstructured = ExtractedResponse(
             full_text="",
             unstructured_chunks=chunk_list, # type: ignore
             structured_data={},
@@ -115,7 +120,7 @@ class UnstructuredDocumentIngestor:
         print(f"[Unstructured Ingestion] Processing: {file_path}")
         return unstructured
 
-    def ingest_narrative_chunks(self, content: ExtractedContent, batch_size: int = 100):
+    def ingest_narrative_chunks(self, content: ExtractedResponse, batch_size: int = 100):
         from utility_functions import UtilityFunctions
         import hashlib
         chunk_dicts = content.unstructured_chunks
@@ -139,10 +144,11 @@ class UnstructuredDocumentIngestor:
                 batch_chunks.append(chunk_text)
                 batch_metadatas.append(item.get("metadata", {}) if isinstance(item, dict) else {})
             embeddings = self.embedding_manager.generate_embeddings(batch_chunks)
-            # Use utility function to create Qdrant points
-            points = UtilityFunctions.create_qdrant_points(batch_chunks, embeddings, batch_metadatas)           
+            # Use utility function to create Qdrant points, passing IDs from metadata
+            ids = [meta.get("id") for meta in batch_metadatas]
+            points = UtilityFunctions.create_qdrant_points(batch_chunks, embeddings, batch_metadatas, ids=ids)
             try:
-                self.qdrant_manager.upsert_data(points)           
+                self.qdrant_manager.upsert_data(points)
             except Exception as e:
                 print(f"[ERROR] Failed to upsert points to Qdrant: {e}")
         print(f"✅ Vector ingestion complete: {len(chunk_dicts)} chunks")

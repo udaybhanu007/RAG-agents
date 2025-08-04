@@ -1,7 +1,7 @@
 from classify_document import classify_document, analyze_repository_documents
 from mixed_document import MixedDocumentIngestor
-from structured_document import StructuredDocumentIngestor
-from unstructured_document import UnstructuredDocumentIngestor
+from ingestion_structured_document import StructuredDocumentIngestor
+from ingestion_unstructured_document import UnstructuredDocumentIngestor
 
 class DocumentIngestionAdapter:
     """

@@ -17,7 +17,7 @@ import re
 import os
 import pymupdf4llm
 from pathlib import Path
-from pdf_markdown import pdf_markdown
+from pdf_extractor import pdf_markdown
 
 # File extension constants for document classification
 STRUCTURED_EXTENSIONS = [".csv", ".xlsx", ".xls", ".xml", ".json", ".yaml", ".yml"]
@@ -102,7 +102,7 @@ def analyze_content_structure(content):
         return "mixed"  # Documents with both data tables and narrative
     elif has_tables and not has_narrative:
         return "structured"  # Primarily data/tables
-    elif has_narrative and (is_research_paper or is_medical_content):
+    elif has_narrative and (is_research_paper and is_medical_content):
         return "mixed"  # Research papers typically have some structured elements
     elif has_narrative:
         return "unstructured"  # Primarily narrative text

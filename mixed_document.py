@@ -20,9 +20,9 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 from utility_functions import UtilityFunctions
-from modelclass import ExtractedContent
-from structured_document import StructuredDocumentIngestor
-from unstructured_document import UnstructuredDocumentIngestor
+from ExtractedResponse import ExtractedResponse
+from ingestion_structured_document import StructuredDocumentIngestor
+from ingestion_unstructured_document import UnstructuredDocumentIngestor
 
 
 # --- Modularized Helper Classes ---
@@ -99,7 +99,7 @@ class MixedDocumentIngestor:
         self.narrative_chunker = NarrativeChunker(self.unstructured_ingestor)
         self.entity_rel_extractor = EntityRelationshipExtractor(self.structured_ingestor)
 
-    def process_mixed_document(self, file_path: str, content: Optional[str] = None) -> ExtractedContent:
+    def process_mixed_document(self, file_path: str, content: Optional[str] = None) -> ExtractedResponse:
         raw_content = self.pdf_extractor.extract(file_path, content)
         full_text = raw_content['text']
         tables = raw_content['tables']
@@ -116,7 +116,7 @@ class MixedDocumentIngestor:
         #     "document_type": UtilityFunctions.determine_document_type(full_text),
         #     "processing_timestamp": "2025-07-29T00:00:00Z"
         # }
-        return ExtractedContent(
+        return ExtractedResponse(
             full_text=full_text,
             unstructured_chunks=unstructured_chunks,
             structured_data=structured_data,

@@ -2,7 +2,7 @@ from typing import List, Dict, Any
 from dataclasses import dataclass
 
 @dataclass
-class ExtractedContent:
+class ExtractedResponse:
     """Container for parsed document content"""
     full_text: str
     unstructured_chunks: List[str]

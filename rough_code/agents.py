@@ -312,19 +312,53 @@ class GraphRAGAgent:
         self.driver = neo4j_driver
         self.llm = llm
         self.entity_extraction_prompt = """
-        Extract named entities and relationships from the following query:
-        
-        Query: {query}
-        
-        Identify:
-        1. Named entities (people, places, organizations, concepts)
-        2. Potential relationships between entities
-        3. Key concepts that might exist in a knowledge graph
-        
-        Format your response as:
-        ENTITIES: [entity1, entity2, ...]
-        RELATIONSHIPS: [relationship1, relationship2, ...]
-        CONCEPTS: [concept1, concept2, ...]
+        You are an expert entity extraction specialist for medical knowledge graphs. Extract named entities, relationships, and concepts from the query using a systematic approach.
+
+        STEP 1: ENTITY IDENTIFICATION
+        Identify these entity types:
+        - MEDICAL CONDITIONS: diseases, disorders, pathologies (e.g., pneumonia, cardiomegaly)
+        - ANATOMICAL STRUCTURES: body parts, organs (e.g., lung, heart, chest)
+        - MEDICAL PROCEDURES: tests, imaging, treatments (e.g., chest X-ray, CT scan)
+        - CLINICAL FINDINGS: symptoms, signs (e.g., dyspnea, opacity, consolidation)
+        - CONTEXTUAL: severity, location, timing (e.g., acute, bilateral, upper lobe)
+
+        STEP 2: RELATIONSHIP IDENTIFICATION
+        Identify relationship indicators:
+        - CAUSATIVE: "causes", "leads to", "results in"
+        - ASSOCIATED: "associated with", "related to", "linked to"
+        - DIAGNOSTIC: "indicates", "suggests", "shows"
+        - LOCATIONAL: "located in", "affects", "involves"
+
+        STEP 3: CONCEPT EXTRACTION
+        Extract broader medical domains and specialties.
+
+        EXAMPLES:
+
+        Query: "What is the relationship between pneumonia and lung opacity in chest X-rays?"
+        ENTITIES: [pneumonia, lung opacity, chest X-rays, lung]
+        RELATIONSHIPS: [relationship between, shows, indicates]
+        CONCEPTS: [respiratory diseases, diagnostic imaging, radiological findings]
+
+        Query: "How does cardiomegaly affect cardiac function?"
+        ENTITIES: [cardiomegaly, cardiac function, heart]
+        RELATIONSHIPS: [affects, causes, impacts]
+        CONCEPTS: [cardiac disorders, cardiovascular pathology]
+
+        Query: "Compare pleural effusion symptoms with pneumothorax"
+        ENTITIES: [pleural effusion, pneumothorax, symptoms]
+        RELATIONSHIPS: [compare, similar to, different from]
+        CONCEPTS: [pleural diseases, respiratory symptoms]
+
+        EXTRACTION RULES:
+        1. Extract 3-6 entities maximum for precision
+        2. Focus on medically relevant terms only
+        3. Normalize medical terms when possible
+        4. Capture relationship words exactly as they appear
+
+        OUTPUT FORMAT (REQUIRED):
+        ENTITIES: [entity1, entity2, entity3]
+        RELATIONSHIPS: [relationship1, relationship2]
+        CONCEPTS: [concept1, concept2]
         """
     
     def extract_and_query(self, state: WorkflowState) -> WorkflowState:
@@ -345,7 +379,19 @@ class GraphRAGAgent:
                 entities, relationships, concepts = self._parse_entity_response(entities_response.content)
                 
                 # Build Cypher queries
-                cypher_queries = self._build_cypher_queries(entities, relationships, concepts, query)
+                cypher_queries = self._build_cypher_queries(entities, relationships, concepts)
+                
+                # Log query building strategy
+                scenario = self._identify_query_scenario(entities, relationships, concepts)
+                logger.info(
+                    "graph_query_scenario_selected",
+                    scenario=scenario,
+                    entities_count=len(entities),
+                    relationships_count=len(relationships),
+                    concepts_count=len(concepts),
+                    queries_generated=len(cypher_queries),
+                    trace_id=state.get('trace_id')
+                )
                 
                 # Execute queries and collect results
                 graph_triples = []
@@ -395,22 +441,18 @@ class GraphRAGAgent:
         
         try:
             lines = response.split('\n')
-            current_section = None
             
             for line in lines:
                 line = line.strip()
                 if line.startswith('ENTITIES:'):
-                    current_section = 'entities'
                     entities_text = line.split('ENTITIES:')[1].strip()
                     if entities_text and entities_text != '[]':
                         entities = [e.strip() for e in entities_text.strip('[]').split(',')]
                 elif line.startswith('RELATIONSHIPS:'):
-                    current_section = 'relationships'
                     rel_text = line.split('RELATIONSHIPS:')[1].strip()
                     if rel_text and rel_text != '[]':
                         relationships = [r.strip() for r in rel_text.strip('[]').split(',')]
                 elif line.startswith('CONCEPTS:'):
-                    current_section = 'concepts'
                     concepts_text = line.split('CONCEPTS:')[1].strip()
                     if concepts_text and concepts_text != '[]':
                         concepts = [c.strip() for c in concepts_text.strip('[]').split(',')]
@@ -419,35 +461,181 @@ class GraphRAGAgent:
         
         return entities, relationships, concepts
     
+    def _identify_query_scenario(self, entities: List[str], relationships: List[str], concepts: List[str]) -> str:
+        """Identify which query scenario should be used"""
+        if len(entities) >= 2 and relationships:
+            return "MULTI_ENTITY_WITH_RELATIONSHIPS"
+        elif len(entities) >= 2 and not relationships:
+            return "MULTI_ENTITY_NO_RELATIONSHIPS"
+        elif len(entities) == 1 and relationships:
+            return "SINGLE_ENTITY_WITH_RELATIONSHIPS"
+        elif len(entities) == 1 and not relationships:
+            return "SINGLE_ENTITY_NO_RELATIONSHIPS"
+        elif not entities and not relationships and concepts:
+            return "CONCEPTS_ONLY"
+        else:
+            # This should rarely happen with a well-designed extraction prompt
+            return "CONCEPTS_ONLY"  # Default to concept-based search as most reliable fallback
+    
+    
     def _build_cypher_queries(self, entities: List[str], relationships: List[str], 
-                            concepts: List[str], original_query: str) -> List[str]:
-        """Build Cypher queries based on extracted entities and relationships"""
+                            concepts: List[str]) -> List[str]:
+        """Build Cypher queries based on scenario identification"""
         queries = []
         
-        # Query for direct entity matches
-        for entity in entities[:5]:  # Limit to prevent too many queries
+        # Get scenario using single source of truth
+        scenario = self._identify_query_scenario(entities, relationships, concepts)
+        
+        # Execute queries based on identified scenario
+        if scenario == "MULTI_ENTITY_WITH_RELATIONSHIPS":
+            queries = self._build_multi_entity_relationship_queries(entities, relationships)
+            
+        elif scenario == "MULTI_ENTITY_NO_RELATIONSHIPS":
+            queries = self._build_multi_entity_queries(entities)
+            
+        elif scenario == "SINGLE_ENTITY_WITH_RELATIONSHIPS":
+            queries = self._build_single_entity_relationship_queries(entities[0], relationships)
+            
+        elif scenario == "SINGLE_ENTITY_NO_RELATIONSHIPS":
+            queries = self._build_single_entity_queries(entities[0])
+            
+        elif scenario == "CONCEPTS_ONLY":
+            queries = self._build_concept_queries(concepts)
+        
+        # Add concept enhancement for scenarios with concepts (supplementary)
+        if concepts and queries and scenario != "CONCEPTS_ONLY":
+            concept_queries = self._build_concept_enhancement_queries(concepts)
+            queries.extend(concept_queries)
+        
+        return queries
+    
+    def _build_multi_entity_relationship_queries(self, entities: List[str], relationships: List[str]) -> List[str]:
+        """Build queries for multiple entities with explicit relationships"""
+        queries = []
+        
+        # Entity-to-entity relationships
+        for i in range(len(entities)):
+            for j in range(i+1, len(entities)):
+                query = f"""
+                MATCH (a)-[r]-(b) 
+                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') 
+                       OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
+                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') 
+                     OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
+                RETURN a.name as subject, type(r) as predicate, b.name as object
+                LIMIT 5
+                """
+                queries.append(query)
+        
+        # Relationship-specific searches with primary entity
+        primary_entity = entities[0]
+        for relationship in relationships:
+            query = f"""
+            MATCH (a)-[r]-(b)
+            WHERE (toLower(a.name) CONTAINS toLower('{primary_entity}')
+                   OR toLower(a.title) CONTAINS toLower('{primary_entity}'))
+            AND (toLower(type(r)) CONTAINS toLower('{relationship}')
+                 OR toLower(r.type) CONTAINS toLower('{relationship}'))
+            RETURN a.name as subject, type(r) as predicate, b.name as object
+            LIMIT 5
+            """
+            queries.append(query)
+        
+        return queries
+    
+    def _build_multi_entity_queries(self, entities: List[str]) -> List[str]:
+        """Build queries for multiple entities without explicit relationships"""
+        queries = []
+        
+        for i in range(len(entities)):
+            for j in range(i+1, len(entities)):
+                query = f"""
+                MATCH (a)-[r]-(b) 
+                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') 
+                       OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
+                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') 
+                     OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
+                RETURN a.name as subject, type(r) as predicate, b.name as object
+                LIMIT 8
+                """
+                queries.append(query)
+        
+        return queries
+    
+    def _build_single_entity_relationship_queries(self, entity: str, relationships: List[str]) -> List[str]:
+        """Build queries for single entity with explicit relationships"""
+        queries = []
+        
+        for relationship in relationships:
+            query = f"""
+            MATCH (a)-[r]-(b)
+            WHERE (toLower(a.name) CONTAINS toLower('{entity}')
+                   OR toLower(a.title) CONTAINS toLower('{entity}'))
+            AND (toLower(type(r)) CONTAINS toLower('{relationship}')
+                 OR toLower(r.type) CONTAINS toLower('{relationship}'))
+            RETURN a.name as subject, type(r) as predicate, b.name as object
+            LIMIT 8
+            """
+            queries.append(query)
+        
+        return queries
+    
+    def _build_single_entity_queries(self, entity: str) -> List[str]:
+        """Build queries for single entity without relationships"""
+        queries = []
+        
+        # Direct entity properties
+        query = f"""
+        MATCH (n) 
+        WHERE toLower(n.name) CONTAINS toLower('{entity}') 
+        OR toLower(n.title) CONTAINS toLower('{entity}')
+        RETURN n.name as subject, 'has_property' as predicate, n as object
+        LIMIT 5
+        """
+        queries.append(query)
+        
+        # Entity connections
+        query = f"""
+        MATCH (a)-[r]-(b)
+        WHERE toLower(a.name) CONTAINS toLower('{entity}')
+        OR toLower(a.title) CONTAINS toLower('{entity}')
+        RETURN a.name as subject, type(r) as predicate, b.name as object
+        LIMIT 8
+        """
+        queries.append(query)
+        
+        return queries
+    
+    def _build_concept_queries(self, concepts: List[str]) -> List[str]:
+        """Build queries for concept-only scenarios"""
+        queries = []
+        
+        for concept in concepts:
             query = f"""
             MATCH (n) 
-            WHERE toLower(n.name) CONTAINS toLower('{entity}') 
-            OR toLower(n.title) CONTAINS toLower('{entity}')
-            RETURN n.name as subject, 'has_property' as predicate, n as object
+            WHERE toLower(n.category) CONTAINS toLower('{concept}')
+            OR toLower(n.domain) CONTAINS toLower('{concept}')
+            OR toLower(n.specialty) CONTAINS toLower('{concept}')
+            RETURN n.name as subject, 'belongs_to_concept' as predicate, '{concept}' as object
             LIMIT 10
             """
             queries.append(query)
         
-        # Query for relationships between entities
-        if len(entities) >= 2:
-            for i in range(min(len(entities), 3)):
-                for j in range(i+1, min(len(entities), 3)):
-                    query = f"""
-                    MATCH (a)-[r]-(b) 
-                    WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') 
-                           OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
-                    AND (toLower(b.name) CONTAINS toLower('{entities[j]}') 
-                         OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
-                    RETURN a.name as subject, type(r) as predicate, b.name as object
-                    LIMIT 5
-                    """
-                    queries.append(query)
+        return queries
+    
+    def _build_concept_enhancement_queries(self, concepts: List[str]) -> List[str]:
+        """Build supplementary concept queries for enhancement"""
+        queries = []
+        
+        # Limit to 1-2 most relevant concepts to avoid query explosion
+        for concept in concepts[:2]:
+            query = f"""
+            MATCH (n) 
+            WHERE toLower(n.category) CONTAINS toLower('{concept}')
+            OR toLower(n.domain) CONTAINS toLower('{concept}')
+            RETURN n.name as subject, 'belongs_to_concept' as predicate, '{concept}' as object
+            LIMIT 3
+            """
+            queries.append(query)
         
         return queries

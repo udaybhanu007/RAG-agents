@@ -1,4 +1,5 @@
-# This 
+# This script ingests patient and bounding box data into a Neo4j database.
+# It connects to a Neo4j AuraDB instance and processes two separate JSON files:
 import json
 from neo4j import GraphDatabase
 

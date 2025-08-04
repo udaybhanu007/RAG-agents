@@ -156,44 +156,6 @@ def log_with_context(logger: structlog.BoundLogger, **context) -> structlog.Boun
     return logger.bind(**context)
 
 
-# Convenience functions for common logging patterns
-def log_agent_start(logger: structlog.BoundLogger, agent_name: str, **kwargs):
-    """Log the start of an agent operation"""
-    logger.info(
-        "agent_operation_started",
-        agent=agent_name,
-        **kwargs
-    )
-
-
-def log_agent_complete(logger: structlog.BoundLogger, agent_name: str, duration_ms: float, **kwargs):
-    """Log the completion of an agent operation"""
-    logger.info(
-        "agent_operation_completed",
-        agent=agent_name,
-        duration_ms=duration_ms,
-        **kwargs
-    )
-
-
-def log_agent_error(logger: structlog.BoundLogger, agent_name: str, error: str, **kwargs):
-    """Log an agent error"""
-    logger.error(
-        "agent_operation_failed",
-        agent=agent_name,
-        error=error,
-        **kwargs
-    )
-
-
-def log_query_metrics(logger: structlog.BoundLogger, **metrics):
-    """Log query processing metrics"""
-    logger.info(
-        "query_metrics",
-        **metrics
-    )
-
-
 # Example usage and testing
 if __name__ == "__main__":
     # Test the logging configuration
@@ -215,10 +177,5 @@ if __name__ == "__main__":
     # Test context binding
     session_logger = log_with_context(logger, session_id="test_123", trace_id="trace_456")
     session_logger.info("Context test", action="processing")
-    
-    # Test convenience functions
-    log_agent_start(logger, "test_agent", query="test query")
-    log_agent_complete(logger, "test_agent", 123.45, status="success")
-    log_agent_error(logger, "test_agent", "Test error message", error_code="TEST001")
     
     print("✅ Logging configuration test completed!")

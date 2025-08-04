@@ -138,10 +138,4 @@ with driver.session() as session:
     except Exception as e:
         print(f"❌ Ingestion failed: {e}")
 
-"""
-⚠️ OPTIONAL — RECOMMENDED SETUP (Run once in Neo4j Browser)
-CREATE CONSTRAINT patient_id_unique IF NOT EXISTS ON (p:Patient) ASSERT p.id IS UNIQUE;
-CREATE CONSTRAINT image_id_unique IF NOT EXISTS ON (i:Image) ASSERT i.id IS UNIQUE;
-CREATE CONSTRAINT finding_name_unique IF NOT EXISTS ON (f:Finding) ASSERT f.name IS UNIQUE;
-CREATE CONSTRAINT bbox_unique IF NOT EXISTS ON (b:BBox) ASSERT (b.image_id, b.finding, b.x, b.y, b.width, b.height) IS UNIQUE;
-"""
+

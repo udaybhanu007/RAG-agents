@@ -42,7 +42,7 @@ class PDFExtractor:
         }
         try:
             print("   📝 Extracting text with pymupdf4llm...")
-            if content: # remove this later
+            if content: 
                 markdown_text = content
             else:
                 markdown_text = pymupdf4llm.to_markdown(file_path)
@@ -70,7 +70,7 @@ class PDFExtractor:
             #                     print(f"   ⚠️  Warning: Failed to process table on page {page_num}: {e}")
             extracted['tables'] = tables
             extracted['table_count'] = len(tables)
-            print(f"   ✅ Extraction complete: {extracted['word_count']} words, {extracted['table_count']} tables")
+            print(f"   ✅ Extraction complete: {extracted['word_count']} words")
             return extracted
         except Exception as e:
             print(f"   ❌ Extraction failed: {e}")
@@ -99,46 +99,34 @@ class MixedDocumentIngestor:
         self.narrative_chunker = NarrativeChunker(self.unstructured_ingestor)
         self.entity_rel_extractor = EntityRelationshipExtractor(self.structured_ingestor)
 
-    def process_mixed_document(self, file_path: str, content: Optional[str] = None) -> ExtractedResponse:
-        raw_content = self.pdf_extractor.extract(file_path, content)
-        full_text = raw_content['text']
-        tables = raw_content['tables']
-        word_count = raw_content['word_count']
-        table_count = raw_content['table_count']
-        unstructured_chunks = self.narrative_chunker.chunk(file_path, full_text)
-        structured_data, entities, relationships = self.entity_rel_extractor.extract(full_text, tables)
-        # metadata = {
-        #     "file_path": file_path,
-        #     "file_name": Path(file_path).name,
-        #     "word_count": word_count,
-        #     "table_count": table_count,
-        #     "classification": "mixed",
-        #     "document_type": UtilityFunctions.determine_document_type(full_text),
-        #     "processing_timestamp": "2025-07-29T00:00:00Z"
-        # }
-        return ExtractedResponse(
-            full_text=full_text,
-            unstructured_chunks=unstructured_chunks,
-            structured_data=structured_data,
-            entities=entities,
-            relationships=relationships,
-            metadata={}
-        )
-
-    def ingest_mixed_document(self, file_path: str, content: Optional[str] = None):
+    def ingest_mixed_document(self, file_path: str, content: Optional[str] = None) -> ExtractedResponse:
         try:
-            print("🔍 Parsing document content...")
-            document_content = self.process_mixed_document(file_path, content=content)
-            print("\n� DETAILED PARSING RESULTS:")
-            print("=" * 50)
-            print("\n" + "=" * 50)
-            print("✅ PARSING ANALYSIS COMPLETE")
-            print("=" * 50)
-            return document_content
+            raw_content = self.pdf_extractor.extract(file_path, content)
+            full_text = raw_content['text']
+            tables = raw_content['tables']
+            word_count = raw_content['word_count']
+            table_count = raw_content['table_count']
+            unstructured_chunks = self.narrative_chunker.chunk(file_path, full_text)
+            structured_data, entities, relationships = self.entity_rel_extractor.extract(full_text, tables)
+           
+            return ExtractedResponse(
+                full_text=full_text,
+                unstructured_chunks=unstructured_chunks,
+                structured_data=structured_data,
+                entities=entities,
+                relationships=relationships,
+                metadata={}
+            )
         except Exception as e:
-            print(f"\n❌ PARSING FAILED: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"status": "error", "error": str(e)}
-        
+            print(f"❌ Error during mixed document ingestion: {e}")          
+            return ExtractedResponse(
+                full_text="",
+                unstructured_chunks=[],
+                structured_data={},
+                entities=[],
+                relationships=[],
+                metadata={"error": str(e)}
+            )
+
+   
 

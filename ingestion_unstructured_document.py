@@ -1,5 +1,5 @@
 
-COLLECTION_NAME = "my_medical_research_doc"
+COLLECTION_NAME = "poc_medical_research_doc"
 
 
 from typing import List, Dict, Any

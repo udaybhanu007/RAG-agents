@@ -104,8 +104,8 @@ class MixedDocumentIngestor:
             raw_content = self.pdf_extractor.extract(file_path, content)
             full_text = raw_content['text']
             tables = raw_content['tables']
-            word_count = raw_content['word_count']
-            table_count = raw_content['table_count']
+            # word_count = raw_content['word_count']
+            # table_count = raw_content['table_count']
             unstructured_chunks = self.narrative_chunker.chunk(file_path, full_text)
             structured_data, entities, relationships = self.entity_rel_extractor.extract(full_text, tables)
            

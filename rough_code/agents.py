@@ -491,9 +491,6 @@ class OrchestratorAgent:
         
         with observability.measure_agent_performance("orch", state):
             try:
-                # Log routing start
-                observability.log_query_start(state)
-                
                 query = state["query"]
                 
                 # Direct tool execution - no need for complex LLM orchestration
@@ -515,9 +512,6 @@ class OrchestratorAgent:
                 state["route"] = route
                 state["routing_analysis"] = analysis
                 state["routing_confidence"] = confidence
-                
-                # Log routing decision
-                observability.log_routing_decision(state, reasoning)
                 
                 logger.info(
                     "orchestrator_routing_simplified",
@@ -589,9 +583,6 @@ class VectorRAGAgent:
                 # Update state
                 state["vector_docs"] = documents
                 
-                # Log results
-                observability.log_retrieval_results(state, "vector")
-                
                 logger.info(
                     "vector_retrieval_function_calling",
                     documents_retrieved=len(documents),
@@ -642,9 +633,6 @@ class GraphRAGAgent:
                 
                 # Update state
                 state["graph_triples"] = graph_result.triples
-                
-                # Log results
-                observability.log_retrieval_results(state, "graph")
                 
                 logger.info(
                     "graph_retrieval_function_calling",

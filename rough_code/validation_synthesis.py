@@ -276,9 +276,6 @@ class ValidatorAgent:
                 state["validation_errors"] = errors
                 state["validation_result"] = validation_result
                 
-                # Log validation results
-                observability.log_validation_result(state)
-                
                 logger.info(
                     "validation_function_calling",
                     passed=overall_passed,

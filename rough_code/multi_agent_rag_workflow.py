@@ -162,8 +162,6 @@ class MultiAgentRAGWorkflow:
         """
         with observability.measure_agent_performance("orch", state):
             result = self.orchestrator.route_query(state)
-            # Log routing decision
-            observability.log_routing_decision(result)
             return result
     
     def vector_rag_node(self, state: WorkflowState) -> WorkflowState:
@@ -173,8 +171,6 @@ class MultiAgentRAGWorkflow:
         """
         with observability.measure_agent_performance("vec", state):
             result = self.vector_rag.retrieve_documents(state)
-            # Log retrieval results
-            observability.log_retrieval_results(result, "vector")
             return result
     
     def graph_rag_node(self, state: WorkflowState) -> WorkflowState:
@@ -184,8 +180,6 @@ class MultiAgentRAGWorkflow:
         """
         with observability.measure_agent_performance("graph", state):
             result = self.graph_rag.extract_and_query(state)
-            # Log retrieval results
-            observability.log_retrieval_results(result, "graph")
             return result
     
     def validator_node(self, state: WorkflowState) -> WorkflowState:
@@ -195,8 +189,6 @@ class MultiAgentRAGWorkflow:
         """
         with observability.measure_agent_performance("val", state):
             result = self.validator.validate_results(state)
-            # Log validation results
-            observability.log_validation_results("validation", result)
             return result
     
     def synthesizer_node(self, state: WorkflowState) -> WorkflowState:
@@ -206,8 +198,6 @@ class MultiAgentRAGWorkflow:
         """
         with observability.measure_agent_performance("ans", state):
             result = self.synthesizer.synthesize_answer(state)
-            # Log completion
-            observability.log_query_completion(result)
             return result
     
     def route_query(self, state: WorkflowState) -> str:

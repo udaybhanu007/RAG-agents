@@ -7,6 +7,7 @@ It ensures structured, JSON-formatted logs that are perfect for production monit
 
 import os
 import sys
+import logging
 import structlog
 from typing import Dict, Any
 
@@ -85,7 +86,6 @@ def configure_logging(
     )
     
     # Configure standard library logging to work with structlog
-    import logging
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,

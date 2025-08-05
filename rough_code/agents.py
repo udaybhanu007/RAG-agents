@@ -1,11 +1,9 @@
-import os
 from typing import List, Dict, Any, Optional
 from langchain_openai import AzureChatOpenAI
-from langchain_community.vectorstores import Qdrant
 from langchain_openai import AzureOpenAIEmbeddings
+from langchain_core.tools import tool
+from langchain_core.pydantic_v1 import BaseModel, Field
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, Filter, FieldCondition, MatchValue
-import numpy as np
 from workflow_state import WorkflowState
 from observability import observability
 from logging_config import get_logger
@@ -13,112 +11,483 @@ from logging_config import get_logger
 logger = get_logger("agents")
 
 
+# Pydantic models for structured outputs
+class QueryAnalysis(BaseModel):
+    """Simple query analysis focused on routing needs"""
+    intent: str = Field(description="Intent: FACTUAL, RELATIONAL, or ANALYTICAL")
+    entity_count: int = Field(description="Estimated number of entities (1-3+)")
+    has_relationships: bool = Field(description="Whether query asks about relationships")
+
+
+class RoutingDecision(BaseModel):
+    """Routing decision with justification"""
+    route: str = Field(description="Chosen route: vector, graph, both, or none")
+    confidence: str = Field(description="Confidence level: HIGH, MEDIUM, or LOW")
+    reasoning: str = Field(description="Brief explanation for the routing decision")
+
+
+class VectorSearchResult(BaseModel):
+    """Vector search result with document information"""
+    documents: List[Dict[str, Any]] = Field(description="Retrieved documents with scores")
+    total_found: int = Field(description="Total number of documents found")
+    avg_score: float = Field(description="Average relevance score")
+
+
+class RerankedResult(BaseModel):
+    """Reranked documents result"""
+    documents: List[Dict[str, Any]] = Field(description="Reranked documents in relevance order")
+    reranking_applied: bool = Field(description="Whether reranking was successfully applied")
+
+
+class EntityExtraction(BaseModel):
+    """Entity extraction result"""
+    entities: List[str] = Field(description="Extracted medical entities")
+    relationships: List[str] = Field(description="Extracted relationship indicators")
+    concepts: List[str] = Field(description="Extracted medical concepts/domains")
+    scenario: str = Field(description="Identified query scenario type")
+
+
+class GraphQueryResult(BaseModel):
+    """Graph query execution result"""
+    triples: List[Dict[str, Any]] = Field(description="Retrieved knowledge graph triples")
+    queries_executed: int = Field(description="Number of Cypher queries executed")
+    scenario_used: str = Field(description="Query scenario that was applied")
+
+
+# Function calling tools for OrchestratorAgent
+@tool
+def analyze_query_characteristics(query: str) -> QueryAnalysis:
+    """
+    Simple query analysis focused on routing decisions.
+    Uses minimal heuristics for fast, reliable routing.
+    
+    Args:
+        query: The user query to analyze
+        
+    Returns:
+        QueryAnalysis with intent, entity count, and relationship detection
+    """
+    query_lower = query.lower()
+    
+    # Simple intent detection using key patterns
+    if any(word in query_lower for word in ["compare", "versus", "vs", "difference", "similar", "contrast"]):
+        intent = "ANALYTICAL"
+    elif any(word in query_lower for word in ["relationship", "connect", "between", "relate", "link", "associate", "affect", "cause"]):
+        intent = "RELATIONAL"
+    else:
+        intent = "FACTUAL"  # Default for most queries
+    
+    # Simple entity count estimation
+    # Count potential medical/technical terms (capitalized words, medical suffixes)
+    import re
+    
+    # Look for medical-like terms and proper nouns
+    medical_suffixes = re.findall(r'\b\w+(megaly|itis|osis|emia|pathy)\b', query_lower)
+    proper_nouns = re.findall(r'\b[A-Z][a-z]+\b', query)
+    common_medical = ["chest", "lung", "heart", "brain", "x-ray", "ct", "mri", "scan"]
+    medical_words = [word for word in common_medical if word in query_lower]
+    
+    # Combine all potential entities
+    all_entities = medical_suffixes + proper_nouns + medical_words
+    entity_count = min(3, max(1, len(set(all_entities))))  # Cap at 3, minimum 1
+    
+    # Simple relationship detection
+    relationship_indicators = ["relationship", "connect", "between", "relate", "link", "associate", "depend", "affect", "cause"]
+    has_relationships = any(indicator in query_lower for indicator in relationship_indicators)
+    
+    return QueryAnalysis(
+        intent=intent,
+        entity_count=entity_count,
+        has_relationships=has_relationships
+    )
+
+
+# Function calling tools for GraphRAGAgent
+@tool
+def extract_entities_from_query(query: str, llm) -> EntityExtraction:
+    """
+    Extract entities, relationships, and concepts from medical query.
+    
+    Args:
+        query: The medical query to analyze
+        llm: LLM instance for entity extraction
+        
+    Returns:
+        EntityExtraction with structured results
+    """
+    extraction_prompt = """
+    Extract medical entities, relationships, and concepts from this query.
+
+    ENTITY TYPES:
+    - MEDICAL CONDITIONS: diseases, disorders, pathologies
+    - ANATOMICAL STRUCTURES: body parts, organs  
+    - MEDICAL PROCEDURES: tests, imaging, treatments
+    - CLINICAL FINDINGS: symptoms, signs
+    - CONTEXTUAL: severity, location, timing
+
+    RELATIONSHIP INDICATORS:
+    - CAUSATIVE: "causes", "leads to", "results in"
+    - ASSOCIATED: "associated with", "related to", "linked to"  
+    - DIAGNOSTIC: "indicates", "suggests", "shows"
+    - LOCATIONAL: "located in", "affects", "involves"
+
+    OUTPUT FORMAT (REQUIRED):
+    ENTITIES: [entity1, entity2, entity3]
+    RELATIONSHIPS: [relationship1, relationship2]
+    CONCEPTS: [concept1, concept2]
+    
+    Query: {query}
+    """
+    
+    # Get LLM extraction
+    response = llm.invoke(extraction_prompt.format(query=query))
+    
+    # Parse response
+    entities, relationships, concepts = [], [], []
+    
+    try:
+        lines = response.content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.startswith('ENTITIES:'):
+                entities_text = line.split('ENTITIES:')[1].strip()
+                if entities_text and entities_text != '[]':
+                    entities = [e.strip().strip('"\'') for e in entities_text.strip('[]').split(',')]
+            elif line.startswith('RELATIONSHIPS:'):
+                rel_text = line.split('RELATIONSHIPS:')[1].strip()
+                if rel_text and rel_text != '[]':
+                    relationships = [r.strip().strip('"\'') for r in rel_text.strip('[]').split(',')]
+            elif line.startswith('CONCEPTS:'):
+                concepts_text = line.split('CONCEPTS:')[1].strip()
+                if concepts_text and concepts_text != '[]':
+                    concepts = [c.strip().strip('"\'') for c in concepts_text.strip('[]').split(',')]
+    except Exception as e:
+        logger.warning("entity_parsing_failed", error=str(e))
+    
+    # Determine scenario
+    if len(entities) >= 2 and relationships:
+        scenario = "MULTI_ENTITY_WITH_RELATIONSHIPS"
+    elif len(entities) >= 2:
+        scenario = "MULTI_ENTITY_NO_RELATIONSHIPS"
+    elif len(entities) == 1 and relationships:
+        scenario = "SINGLE_ENTITY_WITH_RELATIONSHIPS"
+    elif len(entities) == 1:
+        scenario = "SINGLE_ENTITY_NO_RELATIONSHIPS"
+    else:
+        scenario = "CONCEPTS_ONLY"
+    
+    return EntityExtraction(
+        entities=entities,
+        relationships=relationships,
+        concepts=concepts,
+        scenario=scenario
+    )
+
+
+@tool
+def execute_graph_queries(extraction: EntityExtraction, neo4j_driver) -> GraphQueryResult:
+    """
+    Execute Cypher queries based on entity extraction results.
+    
+    Args:
+        extraction: EntityExtraction with entities, relationships, concepts
+        neo4j_driver: Neo4j driver instance
+        
+    Returns:
+        GraphQueryResult with retrieved triples
+    """
+    entities = extraction.entities
+    relationships = extraction.relationships
+    concepts = extraction.concepts
+    scenario = extraction.scenario
+    
+    # Build queries based on scenario
+    queries = []
+    
+    if scenario == "MULTI_ENTITY_WITH_RELATIONSHIPS":
+        # Entity pair relationships
+        for i in range(len(entities)):
+            for j in range(i+1, len(entities)):
+                query = f"""
+                MATCH (a)-[r]-(b) 
+                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
+                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
+                RETURN a.name as subject, type(r) as predicate, b.name as object
+                LIMIT 5
+                """
+                queries.append(query)
+        
+        # Relationship-specific queries
+        if relationships:
+            primary_entity = entities[0]
+            for relationship in relationships[:2]:  # Limit to avoid query explosion
+                query = f"""
+                MATCH (a)-[r]-(b)
+                WHERE (toLower(a.name) CONTAINS toLower('{primary_entity}') OR toLower(a.title) CONTAINS toLower('{primary_entity}'))
+                AND (toLower(type(r)) CONTAINS toLower('{relationship}') OR toLower(r.type) CONTAINS toLower('{relationship}'))
+                RETURN a.name as subject, type(r) as predicate, b.name as object
+                LIMIT 5
+                """
+                queries.append(query)
+    
+    elif scenario == "MULTI_ENTITY_NO_RELATIONSHIPS":
+        # Simple entity pair connections
+        for i in range(len(entities)):
+            for j in range(i+1, len(entities)):
+                query = f"""
+                MATCH (a)-[r]-(b) 
+                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
+                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
+                RETURN a.name as subject, type(r) as predicate, b.name as object
+                LIMIT 8
+                """
+                queries.append(query)
+    
+    elif scenario == "SINGLE_ENTITY_WITH_RELATIONSHIPS":
+        entity = entities[0]
+        for relationship in relationships:
+            query = f"""
+            MATCH (a)-[r]-(b)
+            WHERE (toLower(a.name) CONTAINS toLower('{entity}') OR toLower(a.title) CONTAINS toLower('{entity}'))
+            AND (toLower(type(r)) CONTAINS toLower('{relationship}') OR toLower(r.type) CONTAINS toLower('{relationship}'))
+            RETURN a.name as subject, type(r) as predicate, b.name as object
+            LIMIT 8
+            """
+            queries.append(query)
+    
+    elif scenario == "SINGLE_ENTITY_NO_RELATIONSHIPS":
+        entity = entities[0]
+        # Entity properties and connections
+        queries = [
+            f"""
+            MATCH (n) 
+            WHERE toLower(n.name) CONTAINS toLower('{entity}') OR toLower(n.title) CONTAINS toLower('{entity}')
+            RETURN n.name as subject, 'has_property' as predicate, n as object
+            LIMIT 5
+            """,
+            f"""
+            MATCH (a)-[r]-(b)
+            WHERE toLower(a.name) CONTAINS toLower('{entity}') OR toLower(a.title) CONTAINS toLower('{entity}')
+            RETURN a.name as subject, type(r) as predicate, b.name as object
+            LIMIT 8
+            """
+        ]
+    
+    else:  # CONCEPTS_ONLY
+        for concept in concepts:
+            query = f"""
+            MATCH (n) 
+            WHERE toLower(n.category) CONTAINS toLower('{concept}') 
+            OR toLower(n.domain) CONTAINS toLower('{concept}')
+            OR toLower(n.specialty) CONTAINS toLower('{concept}')
+            RETURN n.name as subject, 'belongs_to_concept' as predicate, '{concept}' as object
+            LIMIT 10
+            """
+            queries.append(query)
+    
+    # Execute queries and collect results
+    triples = []
+    
+    with neo4j_driver.session() as session:
+        for cypher_query in queries:
+            try:
+                result = session.run(cypher_query)
+                for record in result:
+                    triple = {
+                        "subject": record.get("subject", ""),
+                        "predicate": record.get("predicate", ""),
+                        "object": record.get("object", ""),
+                        "metadata": dict(record.items()),
+                        "source": "knowledge_graph",
+                        "query": cypher_query
+                    }
+                    triples.append(triple)
+            except Exception as e:
+                logger.warning("cypher_query_failed", query=cypher_query, error=str(e))
+    
+    return GraphQueryResult(
+        triples=triples,
+        queries_executed=len(queries),
+        scenario_used=scenario
+    )
+
+
+# Function calling tools for VectorRAGAgent
+@tool
+def perform_vector_search(query: str, qdrant_client, embeddings, collection_name: str = "documents", limit: int = 10, score_threshold: float = 0.6) -> VectorSearchResult:
+    """
+    Perform semantic search using Qdrant vector database.
+    
+    Args:
+        query: The search query
+        qdrant_client: Qdrant client instance
+        embeddings: Azure OpenAI embeddings instance
+        collection_name: Name of the Qdrant collection
+        limit: Maximum number of documents to retrieve
+        score_threshold: Minimum similarity score threshold
+        
+    Returns:
+        VectorSearchResult with documents and metadata
+    """
+    # Generate query embedding
+    query_embedding = embeddings.embed_query(query)
+    
+    # Search in Qdrant
+    search_results = qdrant_client.search(
+        collection_name=collection_name,
+        query_vector=query_embedding,
+        limit=limit,
+        score_threshold=score_threshold,
+        with_payload=True,
+        with_vectors=False
+    )
+    
+    # Convert results to standard format
+    documents = []
+    for result in search_results:
+        doc = {
+            "id": result.id,
+            "content": result.payload.get("content", ""),
+            "metadata": result.payload.get("metadata", {}),
+            "score": float(result.score),
+            "source": "vector_store"
+        }
+        documents.append(doc)
+    
+    # Calculate statistics
+    total_found = len(documents)
+    avg_score = sum(doc["score"] for doc in documents) / total_found if total_found > 0 else 0.0
+    
+    return VectorSearchResult(
+        documents=documents,
+        total_found=total_found,
+        avg_score=avg_score
+    )
+
+
+@tool
+def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], llm) -> RerankedResult:
+    """
+    Rerank documents using LLM for better relevance ordering.
+    
+    Args:
+        query: The original search query
+        documents: List of documents to rerank
+        llm: LLM instance for reranking
+        
+    Returns:
+        RerankedResult with reordered documents
+    """
+    if not documents or len(documents) <= 1:
+        return RerankedResult(documents=documents, reranking_applied=False)
+    
+    try:
+        # Create reranking prompt
+        doc_list = "\n".join([f"{i+1}. {doc['content'][:200]}..." for i, doc in enumerate(documents)])
+        
+        rerank_prompt = f"""
+        Query: {query}
+        
+        Rank these documents by relevance (1 = most relevant):
+        
+        {doc_list}
+        
+        Return only numbers separated by commas (e.g., 3,1,4,2):
+        """
+        
+        # Get LLM ranking
+        response = llm.invoke(rerank_prompt)
+        rankings = [int(x.strip()) - 1 for x in response.content.strip().split(',')]
+        
+        # Validate and reorder
+        if len(rankings) == len(documents) and all(0 <= r < len(documents) for r in rankings):
+            reranked_docs = [documents[i] for i in rankings]
+            return RerankedResult(documents=reranked_docs, reranking_applied=True)
+        
+    except Exception as e:
+        logger.warning("reranking_failed", error=str(e))
+    
+    # Return original order if reranking fails
+    return RerankedResult(documents=documents, reranking_applied=False)
+
+
+@tool
+def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
+    """
+    Mutually exclusive routing logic based on intent and entities.
+    Uses if-elif-else structure to ensure only one rule applies.
+    
+    Args:
+        analysis: QueryAnalysis with intent, entity_count, has_relationships
+        
+    Returns:
+        RoutingDecision with route and reasoning
+    """
+    # Mutually exclusive routing rules (ordered by priority)
+    
+    # Rule 1: Analytical queries always need comprehensive search
+    if analysis.intent == "ANALYTICAL":
+        return RoutingDecision(
+            route="both",
+            confidence="HIGH",
+            reasoning="Analytical query requires comprehensive search"
+        )
+    
+    # Rule 2: Relational queries with multiple entities prefer graph
+    elif analysis.intent == "RELATIONAL" and analysis.entity_count >= 2:
+        return RoutingDecision(
+            route="graph",
+            confidence="HIGH",
+            reasoning="Relational query with multiple entities - graph optimal"
+        )
+    
+    # Rule 3: Relational queries with single entity still prefer graph
+    elif analysis.intent == "RELATIONAL":
+        return RoutingDecision(
+            route="graph",
+            confidence="MEDIUM",
+            reasoning="Relational query - graph preferred for relationships"
+        )
+    
+    # Rule 4: Multiple entities (3+) need comprehensive search
+    elif analysis.entity_count >= 3:
+        return RoutingDecision(
+            route="both",
+            confidence="MEDIUM",
+            reasoning="Multiple entities require comprehensive search"
+        )
+    
+    # Rule 5: Relationship indicators (non-relational intent) prefer graph
+    elif analysis.has_relationships:
+        return RoutingDecision(
+            route="graph",
+            confidence="MEDIUM",
+            reasoning="Relationship indicators detected - graph preferred"
+        )
+    
+    # Rule 6: Simple factual queries with 1-2 entities use vector
+    else:
+        return RoutingDecision(
+            route="vector",
+            confidence="HIGH",
+            reasoning="Simple factual query - semantic search optimal"
+        )
+
+
 class OrchestratorAgent:
     """
-    Orchestrator Agent - Routes queries to appropriate retrieval agents
+    Simplified Function-Calling Orchestrator Agent
+    Routes queries using direct tool execution for fast, reliable routing
     Reads: state.query
     Writes: state.route, state.latency_ms["orch"]
     """
     
-    def __init__(self, llm: AzureChatOpenAI):
-        self.llm = llm
-        self.routing_prompt = """
-        You are a query routing expert. Analyze the query using a systematic two-step approach to determine the optimal retrieval strategy.
-
-        STEP 1: QUERY ANALYSIS
-        First, analyze the query for these specific characteristics:
-        
-        Query: {query}
-        
-        A. Intent Classification:
-        - FACTUAL: Seeking specific facts, definitions, or descriptions
-        - RELATIONAL: Exploring connections, relationships, or dependencies between entities
-        - ANALYTICAL: Requiring comparison, synthesis, or complex reasoning
-        - PROCEDURAL: Looking for step-by-step processes or workflows
-        
-        B. Entity Detection:
-        - Are there 2+ named entities that might be connected?
-        - Does the query ask about relationships using words like: "between", "connected to", "related", "linked", "associated with", "depends on"?
-        
-        C. Scope Assessment:
-        - NARROW: Single concept or entity
-        - MEDIUM: Multiple related concepts
-        - BROAD: Complex multi-faceted question
-        
-        STEP 2: ROUTING DECISION
-        Based on your analysis, select ONE route using these precise rules:
-        
-        ROUTE: "vector"
-        Use when:
-        ✓ FACTUAL intent + single/few entities
-        ✓ Semantic similarity needed ("similar to", "like", "about")
-        ✓ Document content retrieval
-        ✓ Definition or description requests
-        
-        Examples:
-        - "What is pneumonia?"
-        - "Find documents about chest X-ray analysis"
-        - "Explain cardiomegaly findings"
-        - "Show me content similar to pulmonary edema"
-        - "Define atelectasis in medical imaging"
-        - "What are the symptoms of pleural effusion?"
-        
-        ROUTE: "graph"
-        Use when:
-        ✓ RELATIONAL intent + multiple entities
-        ✓ Explicit relationship queries ("how X relates to Y")
-        ✓ Network/connection exploration
-        ✓ Dependency or hierarchy questions
-        
-        Examples:
-        - "How is pneumonia connected to lung opacity?"
-        - "What is the relationship between cardiomegaly and heart failure?"
-        - "Show connections between chest X-ray findings and patient symptoms"
-        - "How do different pathologies depend on each other?"
-        - "What links pneumothorax to respiratory distress?"
-        - "How are consolidation patterns related to infection types?"
-        
-        ROUTE: "both"
-        Use when:
-        ✓ ANALYTICAL intent + complex scope
-        ✓ Requires both semantic content AND relationship data
-        ✓ Comparison queries involving multiple entities
-        ✓ Comprehensive analysis needed
-        
-        Examples:
-        - "Compare pneumonia and pneumothorax findings and their diagnostic relationships"
-        - "Analyze the clinical presentation of various chest pathologies and their interconnections"
-        - "How do different imaging techniques relate to chest X-ray diagnosis, and what are their diagnostic strengths?"
-        - "Compare cardiomegaly and pleural effusion manifestations and their clinical correlations"
-        
-        ROUTE: "none"
-        Use when:
-        ✓ Query is outside available domain knowledge
-        ✓ Requires real-time data not in the system
-        ✓ Personal opinions or subjective judgments
-        ✓ System/meta questions about the AI itself
-        
-        Examples:
-        - "What's the weather today?"
-        - "What do you think about this?"
-        - "How are you feeling?"
-        - "What's happening in the news?"
-        
-        CRITICAL RULES:
-        1. If query contains relationship indicators ("between", "connected", "linked", "related to") + 2+ entities → ALWAYS consider "graph" or "both"
-        2. If query is purely factual about single entity → PREFER "vector"
-        3. If unsure between two routes → DEFAULT to "both"
-        4. Never guess or assume domain knowledge not explicitly mentioned
-        
-        OUTPUT FORMAT (REQUIRED):
-        ANALYSIS: [Brief analysis of intent, entities, and scope]
-        ROUTE: [vector|graph|both|none]
-        REASON: [Specific justification referencing the rules above]
-        CONFIDENCE: [HIGH|MEDIUM|LOW]
-        """
+    def __init__(self):
+        # No dependencies needed - routing uses deterministic tools
+        pass
     
     def route_query(self, state: WorkflowState) -> WorkflowState:
-        """Route the query to appropriate retrieval agents"""
+        """Route the query using function calling approach"""
         
         with observability.measure_agent_performance("orch", state):
             try:
@@ -127,58 +496,33 @@ class OrchestratorAgent:
                 
                 query = state["query"]
                 
-                # Use LLM to make routing decision
-                prompt = self.routing_prompt.format(query=query)
-                response = self.llm.invoke(prompt)
+                # Direct tool execution - no need for complex LLM orchestration
+                # Step 1: Analyze query characteristics
+                analysis_result = analyze_query_characteristics.invoke({"query": query})
                 
-                # Parse response
-                content = response.content.strip()
+                # Step 2: Determine optimal route based on analysis
+                routing_result = determine_optimal_route.invoke({"analysis": analysis_result})
                 
-                # Extract different components
-                analysis_line = [line for line in content.split('\n') if line.startswith('ANALYSIS:')]
-                route_line = [line for line in content.split('\n') if line.startswith('ROUTE:')]
-                reason_line = [line for line in content.split('\n') if line.startswith('REASON:')]
-                confidence_line = [line for line in content.split('\n') if line.startswith('CONFIDENCE:')]
+                # Extract routing information (tools always return valid results)
+                route = routing_result.route
+                confidence = routing_result.confidence
+                reasoning = routing_result.reasoning
                 
-                if route_line:
-                    route = route_line[0].split('ROUTE:')[1].strip().lower()
-                    reason = reason_line[0].split('REASON:')[1].strip() if reason_line else "No reason provided"
-                    analysis = analysis_line[0].split('ANALYSIS:')[1].strip() if analysis_line else "No analysis provided"
-                    confidence = confidence_line[0].split('CONFIDENCE:')[1].strip() if confidence_line else "MEDIUM"
-                else:
-                    # Simple fallback - default to 'both' for safety
-                    route = "both"
-                    reason = "LLM response parsing failed - defaulting to comprehensive retrieval"
-                    analysis = "Unable to parse LLM analysis"
-                    confidence = "LOW"
-                    
-                    # Log the parsing failure for debugging
-                    logger.warning(
-                        "llm_response_parsing_failed",
-                        llm_response=content[:200] + "..." if len(content) > 200 else content,
-                        trace_id=state.get('trace_id')
-                    )
+                # Create analysis summary
+                analysis = f"Intent: {analysis_result.intent}, Entities: {analysis_result.entity_count}, Relationships: {analysis_result.has_relationships}"
                 
-                # Validate route
-                valid_routes = ["vector", "graph", "both", "none"]
-                if route not in valid_routes:
-                    original_route = route
-                    route = "both"  # Default fallback
-                    reason = f"Invalid route detected, defaulting to 'both'. Original: {original_route}"
-                    confidence = "LOW"
-                
-                # Update state with enhanced routing information
+                # Update state with routing information
                 state["route"] = route
                 state["routing_analysis"] = analysis
                 state["routing_confidence"] = confidence
                 
                 # Log routing decision
-                observability.log_routing_decision(state, reason)
+                observability.log_routing_decision(state, reasoning)
                 
                 logger.info(
-                    "orchestrator_routing",
+                    "orchestrator_routing_simplified",
                     route=route,
-                    reason=reason,
+                    reasoning=reasoning,
                     analysis=analysis,
                     confidence=confidence,
                     query_length=len(query),
@@ -188,19 +532,20 @@ class OrchestratorAgent:
                 return state
                 
             except Exception as e:
-                logger.error("orchestrator_error", error=str(e), trace_id=state.get('trace_id'))
-                state["errors"] = state.get("errors", []) + [f"Orchestrator error: {str(e)}"]
+                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
+                state["errors"] = state.get("errors", []) + [f"Orchestrator function calling error: {str(e)}"]
                 state["route"] = "both"  # Safe fallback
+                state["routing_analysis"] = "Error during analysis"
+                state["routing_confidence"] = "LOW"
                 return state
 
 
 class VectorRAGAgent:
     """
-    Vector-RAG Agent - Performs semantic search using Qdrant
+    Function-Calling Vector RAG Agent
+    Performs semantic search and reranking using direct tool execution
     Reads: state.query
-    Tool: Qdrant search
-    Optional: LLM re-rank
-    Writes: state.vector_docs, state.latency_ms["vec"], state.memory_usage["vec"]
+    Writes: state.vector_docs, state.latency_ms["vec"]
     """
     
     def __init__(self, qdrant_client: QdrantClient, embeddings: AzureOpenAIEmbeddings, 
@@ -208,434 +553,114 @@ class VectorRAGAgent:
         self.qdrant_client = qdrant_client
         self.embeddings = embeddings
         self.collection_name = collection_name
-        self.llm = llm  # For optional re-ranking
+        self.llm = llm
     
     def retrieve_documents(self, state: WorkflowState) -> WorkflowState:
-        """
-        Retrieve documents using vector similarity search
-        """
+        """Retrieve documents using function calling approach"""
         
         with observability.measure_agent_performance("vec", state):
             try:
                 query = state["query"]
                 
-                # Standard search parameters
-                limit = 10
-                score_threshold = 0.6
+                # Step 1: Perform vector search using tool
+                search_result = perform_vector_search.invoke({
+                    "query": query,
+                    "qdrant_client": self.qdrant_client,
+                    "embeddings": self.embeddings,
+                    "collection_name": self.collection_name,
+                    "limit": 10,
+                    "score_threshold": 0.6
+                })
                 
-                # Generate query embedding
-                query_embedding = self.embeddings.embed_query(query)
+                documents = search_result.documents
                 
-                # Search in Qdrant
-                search_results = self.qdrant_client.search(
-                    collection_name=self.collection_name,
-                    query_vector=query_embedding,
-                    limit=limit,
-                    score_threshold=score_threshold,
-                    with_payload=True,
-                    with_vectors=False
-                )
+                # Step 2: Optional reranking if LLM available and enough documents
+                if self.llm and len(documents) > 3:
+                    rerank_result = rerank_documents_by_relevance.invoke({
+                        "query": query,
+                        "documents": documents,
+                        "llm": self.llm
+                    })
+                    documents = rerank_result.documents
+                    reranking_applied = rerank_result.reranking_applied
+                else:
+                    reranking_applied = False
                 
-                # Convert results to standard format
-                vector_docs = []
-                for result in search_results:
-                    doc = {
-                        "id": result.id,
-                        "content": result.payload.get("content", ""),
-                        "metadata": result.payload.get("metadata", {}),
-                        "score": float(result.score),
-                        "source": "vector_store"
-                    }
-                    vector_docs.append(doc)
+                # Update state
+                state["vector_docs"] = documents
                 
-                # Optional re-ranking if LLM is available
-                if self.llm and len(vector_docs) > 3:
-                    vector_docs = self._rerank_documents(query, vector_docs)
-                
-                state["vector_docs"] = vector_docs
-                
-                # Log retrieval results
+                # Log results
                 observability.log_retrieval_results(state, "vector")
                 
                 logger.info(
-                    "vector_retrieval_completed",
-                    documents_retrieved=len(vector_docs),
-                    avg_score=sum(doc["score"] for doc in vector_docs) / len(vector_docs) if vector_docs else 0,
+                    "vector_retrieval_function_calling",
+                    documents_retrieved=len(documents),
+                    avg_score=search_result.avg_score,
+                    reranking_applied=reranking_applied,
                     trace_id=state.get('trace_id')
                 )
                 
                 return state
                 
             except Exception as e:
-                logger.error("vector_rag_error", error=str(e), trace_id=state.get('trace_id'))
+                logger.error("vector_rag_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
                 state["errors"] = state.get("errors", []) + [f"Vector RAG error: {str(e)}"]
-                if not state.get("vector_docs"):
-                    state["vector_docs"] = []
+                state["vector_docs"] = []
                 return state
-    
-    def _rerank_documents(self, query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Use LLM to re-rank documents for better relevance"""
-        try:
-            rerank_prompt = f"""
-            Query: {query}
-            
-            Rank the following documents by relevance to the query (1 = most relevant):
-            
-            {chr(10).join([f"{i+1}. {doc['content'][:200]}..." for i, doc in enumerate(documents)])}
-            
-            Return only the ranking as numbers separated by commas (e.g., 3,1,4,2):
-            """
-            
-            response = self.llm.invoke(rerank_prompt)
-            rankings = [int(x.strip()) - 1 for x in response.content.strip().split(',')]
-            
-            # Reorder documents based on rankings
-            if len(rankings) == len(documents):
-                return [documents[i] for i in rankings if 0 <= i < len(documents)]
-            
-        except Exception as e:
-            logger.warning("reranking_failed", error=str(e))
-        
-        return documents  # Return original order if reranking fails
 
 
 class GraphRAGAgent:
     """
-    Graph-RAG Agent - Performs entity extraction and graph queries using Neo4j
+    Function-Calling Graph RAG Agent
+    Performs entity extraction and graph queries using direct tool execution
     Reads: state.query
-    Tool: Neo4j Cypher
-    Entity extraction
-    Writes: state.graph_triples, state.latency_ms["graph"], state.memory_usage["graph"]
+    Writes: state.graph_triples, state.latency_ms["graph"]
     """
     
     def __init__(self, neo4j_driver, llm: AzureChatOpenAI):
         self.driver = neo4j_driver
         self.llm = llm
-        self.entity_extraction_prompt = """
-        You are an expert entity extraction specialist for medical knowledge graphs. Extract named entities, relationships, and concepts from the query using a systematic approach.
-
-        STEP 1: ENTITY IDENTIFICATION
-        Identify these entity types:
-        - MEDICAL CONDITIONS: diseases, disorders, pathologies (e.g., pneumonia, cardiomegaly)
-        - ANATOMICAL STRUCTURES: body parts, organs (e.g., lung, heart, chest)
-        - MEDICAL PROCEDURES: tests, imaging, treatments (e.g., chest X-ray, CT scan)
-        - CLINICAL FINDINGS: symptoms, signs (e.g., dyspnea, opacity, consolidation)
-        - CONTEXTUAL: severity, location, timing (e.g., acute, bilateral, upper lobe)
-
-        STEP 2: RELATIONSHIP IDENTIFICATION
-        Identify relationship indicators:
-        - CAUSATIVE: "causes", "leads to", "results in"
-        - ASSOCIATED: "associated with", "related to", "linked to"
-        - DIAGNOSTIC: "indicates", "suggests", "shows"
-        - LOCATIONAL: "located in", "affects", "involves"
-
-        STEP 3: CONCEPT EXTRACTION
-        Extract broader medical domains and specialties.
-
-        EXAMPLES:
-
-        Query: "What is the relationship between pneumonia and lung opacity in chest X-rays?"
-        ENTITIES: [pneumonia, lung opacity, chest X-rays, lung]
-        RELATIONSHIPS: [relationship between, shows, indicates]
-        CONCEPTS: [respiratory diseases, diagnostic imaging, radiological findings]
-
-        Query: "How does cardiomegaly affect cardiac function?"
-        ENTITIES: [cardiomegaly, cardiac function, heart]
-        RELATIONSHIPS: [affects, causes, impacts]
-        CONCEPTS: [cardiac disorders, cardiovascular pathology]
-
-        Query: "Compare pleural effusion symptoms with pneumothorax"
-        ENTITIES: [pleural effusion, pneumothorax, symptoms]
-        RELATIONSHIPS: [compare, similar to, different from]
-        CONCEPTS: [pleural diseases, respiratory symptoms]
-
-        EXTRACTION RULES:
-        1. Extract 3-6 entities maximum for precision
-        2. Focus on medically relevant terms only
-        3. Normalize medical terms when possible
-        4. Capture relationship words exactly as they appear
-
-        OUTPUT FORMAT (REQUIRED):
-        ENTITIES: [entity1, entity2, entity3]
-        RELATIONSHIPS: [relationship1, relationship2]
-        CONCEPTS: [concept1, concept2]
-        """
     
     def extract_and_query(self, state: WorkflowState) -> WorkflowState:
-        """
-        Extract entities and query the knowledge graph
-        """
+        """Extract entities and query knowledge graph using function calling approach"""
         
         with observability.measure_agent_performance("graph", state):
             try:
                 query = state["query"]
                 
-                # Extract entities using LLM
-                entities_response = self.llm.invoke(
-                    self.entity_extraction_prompt.format(query=query)
-                )
+                # Step 1: Extract entities, relationships, and concepts
+                extraction_result = extract_entities_from_query.invoke({
+                    "query": query,
+                    "llm": self.llm
+                })
                 
-                # Parse entity extraction results
-                entities, relationships, concepts = self._parse_entity_response(entities_response.content)
+                # Step 2: Execute graph queries based on extraction
+                graph_result = execute_graph_queries.invoke({
+                    "extraction": extraction_result,
+                    "neo4j_driver": self.driver
+                })
                 
-                # Build Cypher queries
-                cypher_queries = self._build_cypher_queries(entities, relationships, concepts)
+                # Update state
+                state["graph_triples"] = graph_result.triples
                 
-                # Log query building strategy
-                scenario = self._identify_query_scenario(entities, relationships, concepts)
-                logger.info(
-                    "graph_query_scenario_selected",
-                    scenario=scenario,
-                    entities_count=len(entities),
-                    relationships_count=len(relationships),
-                    concepts_count=len(concepts),
-                    queries_generated=len(cypher_queries),
-                    trace_id=state.get('trace_id')
-                )
-                
-                # Execute queries and collect results
-                graph_triples = []
-                
-                with self.driver.session() as session:
-                    for cypher_query in cypher_queries:
-                        try:
-                            result = session.run(cypher_query)
-                            for record in result:
-                                triple = {
-                                    "subject": record.get("subject", ""),
-                                    "predicate": record.get("predicate", ""),
-                                    "object": record.get("object", ""),
-                                    "metadata": dict(record.items()),
-                                    "source": "knowledge_graph",
-                                    "query": cypher_query
-                                }
-                                graph_triples.append(triple)
-                        except Exception as e:
-                            logger.warning("cypher_query_failed", query=cypher_query, error=str(e))
-                
-                state["graph_triples"] = graph_triples
-                
-                # Log retrieval results
+                # Log results
                 observability.log_retrieval_results(state, "graph")
                 
                 logger.info(
-                    "graph_retrieval_completed",
-                    entities_found=len(entities),
-                    relationships_found=len(relationships),
-                    triples_retrieved=len(graph_triples),
+                    "graph_retrieval_function_calling",
+                    entities_found=len(extraction_result.entities),
+                    relationships_found=len(extraction_result.relationships),
+                    concepts_found=len(extraction_result.concepts),
+                    scenario_used=extraction_result.scenario,
+                    queries_executed=graph_result.queries_executed,
+                    triples_retrieved=len(graph_result.triples),
                     trace_id=state.get('trace_id')
                 )
                 
                 return state
                 
             except Exception as e:
-                logger.error("graph_rag_error", error=str(e), trace_id=state.get('trace_id'))
+                logger.error("graph_rag_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
                 state["errors"] = state.get("errors", []) + [f"Graph RAG error: {str(e)}"]
-                if not state.get("graph_triples"):
-                    state["graph_triples"] = []
+                state["graph_triples"] = []
                 return state
-    
-    def _parse_entity_response(self, response: str) -> tuple:
-        """Parse LLM response for entity extraction"""
-        entities, relationships, concepts = [], [], []
-        
-        try:
-            lines = response.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if line.startswith('ENTITIES:'):
-                    entities_text = line.split('ENTITIES:')[1].strip()
-                    if entities_text and entities_text != '[]':
-                        entities = [e.strip() for e in entities_text.strip('[]').split(',')]
-                elif line.startswith('RELATIONSHIPS:'):
-                    rel_text = line.split('RELATIONSHIPS:')[1].strip()
-                    if rel_text and rel_text != '[]':
-                        relationships = [r.strip() for r in rel_text.strip('[]').split(',')]
-                elif line.startswith('CONCEPTS:'):
-                    concepts_text = line.split('CONCEPTS:')[1].strip()
-                    if concepts_text and concepts_text != '[]':
-                        concepts = [c.strip() for c in concepts_text.strip('[]').split(',')]
-        except Exception as e:
-            logger.warning("entity_parsing_failed", error=str(e))
-        
-        return entities, relationships, concepts
-    
-    def _identify_query_scenario(self, entities: List[str], relationships: List[str], concepts: List[str]) -> str:
-        """Identify which query scenario should be used"""
-        if len(entities) >= 2 and relationships:
-            return "MULTI_ENTITY_WITH_RELATIONSHIPS"
-        elif len(entities) >= 2 and not relationships:
-            return "MULTI_ENTITY_NO_RELATIONSHIPS"
-        elif len(entities) == 1 and relationships:
-            return "SINGLE_ENTITY_WITH_RELATIONSHIPS"
-        elif len(entities) == 1 and not relationships:
-            return "SINGLE_ENTITY_NO_RELATIONSHIPS"
-        elif not entities and not relationships and concepts:
-            return "CONCEPTS_ONLY"
-        else:
-            # This should rarely happen with a well-designed extraction prompt
-            return "CONCEPTS_ONLY"  # Default to concept-based search as most reliable fallback
-    
-    
-    def _build_cypher_queries(self, entities: List[str], relationships: List[str], 
-                            concepts: List[str]) -> List[str]:
-        """Build Cypher queries based on scenario identification"""
-        queries = []
-        
-        # Get scenario using single source of truth
-        scenario = self._identify_query_scenario(entities, relationships, concepts)
-        
-        # Execute queries based on identified scenario
-        if scenario == "MULTI_ENTITY_WITH_RELATIONSHIPS":
-            queries = self._build_multi_entity_relationship_queries(entities, relationships)
-            
-        elif scenario == "MULTI_ENTITY_NO_RELATIONSHIPS":
-            queries = self._build_multi_entity_queries(entities)
-            
-        elif scenario == "SINGLE_ENTITY_WITH_RELATIONSHIPS":
-            queries = self._build_single_entity_relationship_queries(entities[0], relationships)
-            
-        elif scenario == "SINGLE_ENTITY_NO_RELATIONSHIPS":
-            queries = self._build_single_entity_queries(entities[0])
-            
-        elif scenario == "CONCEPTS_ONLY":
-            queries = self._build_concept_queries(concepts)
-        
-        # Add concept enhancement for scenarios with concepts (supplementary)
-        if concepts and queries and scenario != "CONCEPTS_ONLY":
-            concept_queries = self._build_concept_enhancement_queries(concepts)
-            queries.extend(concept_queries)
-        
-        return queries
-    
-    def _build_multi_entity_relationship_queries(self, entities: List[str], relationships: List[str]) -> List[str]:
-        """Build queries for multiple entities with explicit relationships"""
-        queries = []
-        
-        # Entity-to-entity relationships
-        for i in range(len(entities)):
-            for j in range(i+1, len(entities)):
-                query = f"""
-                MATCH (a)-[r]-(b) 
-                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') 
-                       OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
-                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') 
-                     OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
-                RETURN a.name as subject, type(r) as predicate, b.name as object
-                LIMIT 5
-                """
-                queries.append(query)
-        
-        # Relationship-specific searches with primary entity
-        primary_entity = entities[0]
-        for relationship in relationships:
-            query = f"""
-            MATCH (a)-[r]-(b)
-            WHERE (toLower(a.name) CONTAINS toLower('{primary_entity}')
-                   OR toLower(a.title) CONTAINS toLower('{primary_entity}'))
-            AND (toLower(type(r)) CONTAINS toLower('{relationship}')
-                 OR toLower(r.type) CONTAINS toLower('{relationship}'))
-            RETURN a.name as subject, type(r) as predicate, b.name as object
-            LIMIT 5
-            """
-            queries.append(query)
-        
-        return queries
-    
-    def _build_multi_entity_queries(self, entities: List[str]) -> List[str]:
-        """Build queries for multiple entities without explicit relationships"""
-        queries = []
-        
-        for i in range(len(entities)):
-            for j in range(i+1, len(entities)):
-                query = f"""
-                MATCH (a)-[r]-(b) 
-                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') 
-                       OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
-                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') 
-                     OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
-                RETURN a.name as subject, type(r) as predicate, b.name as object
-                LIMIT 8
-                """
-                queries.append(query)
-        
-        return queries
-    
-    def _build_single_entity_relationship_queries(self, entity: str, relationships: List[str]) -> List[str]:
-        """Build queries for single entity with explicit relationships"""
-        queries = []
-        
-        for relationship in relationships:
-            query = f"""
-            MATCH (a)-[r]-(b)
-            WHERE (toLower(a.name) CONTAINS toLower('{entity}')
-                   OR toLower(a.title) CONTAINS toLower('{entity}'))
-            AND (toLower(type(r)) CONTAINS toLower('{relationship}')
-                 OR toLower(r.type) CONTAINS toLower('{relationship}'))
-            RETURN a.name as subject, type(r) as predicate, b.name as object
-            LIMIT 8
-            """
-            queries.append(query)
-        
-        return queries
-    
-    def _build_single_entity_queries(self, entity: str) -> List[str]:
-        """Build queries for single entity without relationships"""
-        queries = []
-        
-        # Direct entity properties
-        query = f"""
-        MATCH (n) 
-        WHERE toLower(n.name) CONTAINS toLower('{entity}') 
-        OR toLower(n.title) CONTAINS toLower('{entity}')
-        RETURN n.name as subject, 'has_property' as predicate, n as object
-        LIMIT 5
-        """
-        queries.append(query)
-        
-        # Entity connections
-        query = f"""
-        MATCH (a)-[r]-(b)
-        WHERE toLower(a.name) CONTAINS toLower('{entity}')
-        OR toLower(a.title) CONTAINS toLower('{entity}')
-        RETURN a.name as subject, type(r) as predicate, b.name as object
-        LIMIT 8
-        """
-        queries.append(query)
-        
-        return queries
-    
-    def _build_concept_queries(self, concepts: List[str]) -> List[str]:
-        """Build queries for concept-only scenarios"""
-        queries = []
-        
-        for concept in concepts:
-            query = f"""
-            MATCH (n) 
-            WHERE toLower(n.category) CONTAINS toLower('{concept}')
-            OR toLower(n.domain) CONTAINS toLower('{concept}')
-            OR toLower(n.specialty) CONTAINS toLower('{concept}')
-            RETURN n.name as subject, 'belongs_to_concept' as predicate, '{concept}' as object
-            LIMIT 10
-            """
-            queries.append(query)
-        
-        return queries
-    
-    def _build_concept_enhancement_queries(self, concepts: List[str]) -> List[str]:
-        """Build supplementary concept queries for enhancement"""
-        queries = []
-        
-        # Limit to 1-2 most relevant concepts to avoid query explosion
-        for concept in concepts[:2]:
-            query = f"""
-            MATCH (n) 
-            WHERE toLower(n.category) CONTAINS toLower('{concept}')
-            OR toLower(n.domain) CONTAINS toLower('{concept}')
-            RETURN n.name as subject, 'belongs_to_concept' as predicate, '{concept}' as object
-            LIMIT 3
-            """
-            queries.append(query)
-        
-        return queries

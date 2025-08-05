@@ -89,6 +89,7 @@ class EntityRelationshipExtractor:
         structured_data = self.structured_ingestor.extract_structured_for_graph_db(full_text, tables)
         entities = self.structured_ingestor.extract_entities(full_text)
         relationships = self.structured_ingestor.extract_relationships(full_text, entities)
+        #ingest_structured_document
         return structured_data, entities, relationships
 
 class MixedDocumentIngestor:

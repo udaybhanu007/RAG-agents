@@ -368,6 +368,17 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver) -> GraphQu
             except Exception as e:
                 logger.warning("cypher_query_failed", query=cypher_query, error=str(e))
     
+    # Log if no triples were found
+    if not triples:
+        logger.info(
+            "graph_no_results_found",
+            scenario=scenario,
+            entities_count=len(entities),
+            relationships_count=len(relationships),
+            concepts_count=len(concepts),
+            queries_executed=len(queries)
+        )
+    
     return GraphQueryResult(
         triples=triples,
         queries_executed=len(queries),
@@ -451,6 +462,15 @@ def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, colle
     
     # Calculate statistics
     total_found = len(documents)
+    
+    # Log if no documents were found
+    if not documents:
+        logger.info(
+            "vector_no_results_found",
+            collection_name=collection_name,
+            score_threshold=score_threshold,
+            limit=limit
+        )
     
     # Calculate precision using dynamic relevance assessment if LLM is available
     precision_score = None
@@ -708,7 +728,7 @@ class VectorRAGAgent:
                 
                 documents = search_result.documents
                 
-                # Step 2: Optional reranking if LLM available and enough documents
+                # Step 2: Optional reranking if LLM available and enough real documents
                 if self.llm and len(documents) > 3:
                     rerank_result = rerank_documents_by_relevance.invoke({
                         "query": query,

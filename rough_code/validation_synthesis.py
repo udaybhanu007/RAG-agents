@@ -229,6 +229,30 @@ class ValidatorAgent:
                 vector_docs = state.get("vector_docs", [])
                 graph_triples = state.get("graph_triples", [])
                 
+                # Handle case where both vector and graph results are empty
+                if not vector_docs and not graph_triples:
+                    validation_result = ValidationResult(
+                        passed=False,
+                        errors=["No relevant information found in the knowledge base"],
+                        confidence_score=0.0,
+                        consistency_issues=[]
+                    )
+                    
+                    state["validation_passed"] = False
+                    state["validation_errors"] = ["No relevant information found"]
+                    state["validation_result"] = validation_result
+                    state["final_answer"] = "I couldn't find any relevant information in the knowledge base to answer your medical query. Please try rephrasing your question or asking about a different medical topic."
+                    state["status"] = "completed_no_data"
+                    
+                    logger.info(
+                        "validation_no_data_found",
+                        vector_docs_count=len(vector_docs),
+                        graph_triples_count=len(graph_triples),
+                        trace_id=state.get('trace_id')
+                    )
+                    
+                    return state
+                
                 # Step 1: Validate vector search relevance
                 vector_validation = validate_vector_relevance.invoke({
                     "query": query,
@@ -323,6 +347,21 @@ class AnswerSynthesisAgent:
                 vector_docs = state.get("vector_docs", [])
                 graph_triples = state.get("graph_triples", [])
                 validation_passed = state.get("validation_passed", True)
+                
+                # Check if validator already set a final answer (e.g., for no data found)
+                if "final_answer" in state:
+                    state["answer"] = state["final_answer"]
+                    # Status should already be set by validator
+                    if "status" not in state:
+                        state["status"] = "completed"
+                    
+                    logger.info(
+                        "answer_synthesis_validator_handled",
+                        answer_source="validator",
+                        trace_id=state.get('trace_id')
+                    )
+                    
+                    return state
                 
                 # Only synthesize if validation passed
                 if not validation_passed:

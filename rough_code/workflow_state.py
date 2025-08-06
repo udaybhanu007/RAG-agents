@@ -5,23 +5,12 @@ from datetime import datetime
 
 
 @dataclass
-class CitationSource:
-    """Represents a citation source with type and content"""
-    type: str  # "vector" or "graph"
-    content: str
-    score: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    source_id: Optional[str] = None
-
-
-@dataclass
 class ValidationResult:
     """Results from validation process"""
     passed: bool
     errors: List[str] = field(default_factory=list)
     confidence_score: float = 0.0
     consistency_issues: List[str] = field(default_factory=list)
-    cross_validation_score: float = 0.0
 
 
 class WorkflowState(TypedDict):
@@ -45,8 +34,6 @@ class WorkflowState(TypedDict):
     
     # Final synthesized output
     answer: Optional[str]
-    citations: Optional[List[CitationSource]]
-    confidence_score: Optional[float]
     
     # Performance metrics per agent
     latency_ms: Dict[str, float]  # {"orch": 150, "vec": 300, "graph": 450, "val": 100, "ans": 200}
@@ -81,8 +68,6 @@ def create_initial_state(query: str, session_id: str = None) -> WorkflowState:
         validation_errors=None,
         validation_result=None,
         answer=None,
-        citations=None,
-        confidence_score=None,
         latency_ms={},
         memory_usage={},
         timestamp=datetime.now().isoformat(),

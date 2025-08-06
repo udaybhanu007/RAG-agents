@@ -54,7 +54,70 @@ class GraphQueryResult(BaseModel):
     scenario_used: str = Field(description="Query scenario that was applied")
 
 
+class QueryValidation(BaseModel):
+    """Simple query validation for medical relevance"""
+    is_medical: bool = Field(description="Whether query is medical/healthcare related")
+    quick_response: Optional[str] = Field(description="Response for non-medical queries")
+
+
 # Function calling tools for OrchestratorAgent
+@tool
+def validate_medical_relevance(query: str, llm) -> QueryValidation:
+    """
+    Simple validation to check if query is medical/healthcare related using LLM.
+    
+    Args:
+        query: The user query to validate
+        llm: LLM instance for classification
+        
+    Returns:
+        QueryValidation with medical relevance assessment
+    """
+    
+    validation_prompt = """
+You are a medical query classifier. Determine if this query is medical/healthcare related.
+
+MEDICAL/HEALTHCARE queries include:
+- Medical conditions, diseases, symptoms, treatments
+- Anatomy, physiology, medications, procedures
+- Healthcare systems, medical diagnostics
+- Patient care, clinical scenarios
+
+NON-MEDICAL queries include:
+- General greetings, technology, programming
+- Sports, entertainment, travel, cooking
+- Business, finance, academic (non-medical)
+
+Query: "{query}"
+
+Respond with only:
+MEDICAL or NON_MEDICAL
+"""
+
+    try:
+        response = llm.invoke(validation_prompt.format(query=query))
+        content = response.content.strip().upper()
+        
+        is_medical = "MEDICAL" in content
+        
+        quick_response = None
+        if not is_medical:
+            quick_response = "I'm a medical knowledge assistant specialized in healthcare topics. Please ask me questions about medical conditions, treatments, symptoms, or other healthcare-related matters."
+        
+        return QueryValidation(
+            is_medical=is_medical,
+            quick_response=quick_response
+        )
+        
+    except Exception as e:
+        logger.warning("llm_validation_failed", error=str(e))
+        # Conservative fallback - assume medical to avoid blocking valid queries
+        return QueryValidation(
+            is_medical=True,
+            quick_response=None
+        )
+
+
 @tool
 def analyze_query_characteristics(query: str) -> QueryAnalysis:
     """
@@ -533,33 +596,53 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
 
 class OrchestratorAgent:
     """
-    Simplified Function-Calling Orchestrator Agent
-    Routes queries using direct tool execution for fast, reliable routing
+    Enhanced Function-Calling Orchestrator Agent with Medical Query Validation
+    First validates if query is medical, then routes accordingly
     Reads: state.query
-    Writes: state.route, state.latency_ms["orch"]
+    Writes: state.route, state.latency_ms["orch"], state.final_answer (for non-medical queries)
     """
     
-    def __init__(self):
-        # No dependencies needed - routing uses deterministic tools
-        pass
+    def __init__(self, llm: AzureChatOpenAI = None):
+        self.llm = llm  # LLM for medical validation
     
     def route_query(self, state: WorkflowState) -> WorkflowState:
-        """Route the query using function calling approach"""
+        """Route the query with medical validation using function calling approach"""
         
         with observability.measure_agent_performance("orch", state):
             try:
                 query = state["query"]
                 
-                # Direct tool execution - no need for complex LLM orchestration
-                # Step 1: Analyze query characteristics
+                # Step 1: Validate if query is medical/healthcare related (only if LLM available)
+                if self.llm:
+                    validation_result = validate_medical_relevance.invoke({
+                        "query": query,
+                        "llm": self.llm
+                    })
+                    
+                    # Handle non-medical queries immediately
+                    if not validation_result.is_medical:
+                        state["route"] = "none"
+                        state["routing_analysis"] = "Non-medical query detected"
+                        state["final_answer"] = validation_result.quick_response
+                        state["bypass_retrieval"] = True
+                        
+                        logger.info(
+                            "orchestrator_non_medical_query",
+                            query_length=len(query),
+                            trace_id=state.get('trace_id')
+                        )
+                        
+                        return state
+                
+                # Step 2: For medical queries, proceed with normal routing
+                # Analyze query characteristics
                 analysis_result = analyze_query_characteristics.invoke({"query": query})
                 
-                # Step 2: Determine optimal route based on analysis
+                # Determine optimal route based on analysis
                 routing_result = determine_optimal_route.invoke({"analysis": analysis_result})
                 
-                # Extract routing information (tools always return valid results)
+                # Extract routing information
                 route = routing_result.route
-                confidence = routing_result.confidence
                 reasoning = routing_result.reasoning
                 
                 # Create analysis summary
@@ -568,14 +651,13 @@ class OrchestratorAgent:
                 # Update state with routing information
                 state["route"] = route
                 state["routing_analysis"] = analysis
-                state["routing_confidence"] = confidence
+                state["bypass_retrieval"] = False
                 
                 logger.info(
-                    "orchestrator_routing_simplified",
+                    "orchestrator_medical_routing",
                     route=route,
                     reasoning=reasoning,
                     analysis=analysis,
-                    confidence=confidence,
                     query_length=len(query),
                     trace_id=state.get('trace_id')
                 )
@@ -587,7 +669,7 @@ class OrchestratorAgent:
                 state["errors"] = state.get("errors", []) + [f"Orchestrator function calling error: {str(e)}"]
                 state["route"] = "both"  # Safe fallback
                 state["routing_analysis"] = "Error during analysis"
-                state["routing_confidence"] = "LOW"
+                state["bypass_retrieval"] = False
                 return state
 
 

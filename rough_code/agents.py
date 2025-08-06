@@ -30,7 +30,7 @@ class VectorSearchResult(BaseModel):
     """Vector search result with document information"""
     documents: List[Dict[str, Any]] = Field(description="Retrieved documents with scores")
     total_found: int = Field(description="Total number of documents found")
-    avg_score: float = Field(description="Average relevance score")
+    precision_score: Optional[float] = Field(description="Retrieval precision if relevance labels available")
 
 
 class RerankedResult(BaseModel):
@@ -314,20 +314,52 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver) -> GraphQu
 
 # Function calling tools for VectorRAGAgent
 @tool
-def perform_vector_search(query: str, qdrant_client, embeddings, collection_name: str = "documents", limit: int = 10, score_threshold: float = 0.6) -> VectorSearchResult:
+def assess_document_relevance(query: str, document_content: str, llm) -> bool:
     """
-    Perform semantic search using Qdrant vector database.
+    Assess if a document is relevant to the query using LLM.
+    
+    Args:
+        query: The search query
+        document_content: Content of the retrieved document
+        llm: LLM instance for relevance assessment
+        
+    Returns:
+        Boolean indicating if document is relevant
+    """
+    relevance_prompt = f"""
+    Query: {query}
+    
+    Document: {document_content[:500]}...
+    
+    Is this document relevant to answering the query? Consider if the document contains information that directly addresses or helps answer the question.
+    
+    Answer only: YES or NO
+    """
+    
+    try:
+        response = llm.invoke(relevance_prompt)
+        return response.content.strip().upper() == "YES"
+    except Exception as e:
+        logger.warning("relevance_assessment_failed", error=str(e))
+        return False  # Conservative approach - assume not relevant if assessment fails
+
+
+@tool
+def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, collection_name: str = "documents", limit: int = 10, score_threshold: float = 0.6) -> VectorSearchResult:
+    """
+    Perform semantic search using Qdrant vector database with dynamic relevance assessment.
     
     Args:
         query: The search query
         qdrant_client: Qdrant client instance
         embeddings: Azure OpenAI embeddings instance
+        llm: LLM instance for relevance assessment (optional)
         collection_name: Name of the Qdrant collection
         limit: Maximum number of documents to retrieve
         score_threshold: Minimum similarity score threshold
         
     Returns:
-        VectorSearchResult with documents and metadata
+        VectorSearchResult with documents and precision score
     """
     # Generate query embedding
     query_embedding = embeddings.embed_query(query)
@@ -356,12 +388,37 @@ def perform_vector_search(query: str, qdrant_client, embeddings, collection_name
     
     # Calculate statistics
     total_found = len(documents)
-    avg_score = sum(doc["score"] for doc in documents) / total_found if total_found > 0 else 0.0
+    
+    # Calculate precision using dynamic relevance assessment if LLM is available
+    precision_score = None
+    if llm and documents:
+        relevant_count = 0
+        for doc in documents:
+            is_relevant = assess_document_relevance.invoke({
+                "query": query,
+                "document_content": doc["content"],
+                "llm": llm
+            })
+            if is_relevant:
+                relevant_count += 1
+        
+        precision_score = relevant_count / total_found if total_found > 0 else 0.0
+        
+        # Log precision metrics
+        logger.info(
+            "vector_search_precision_calculated",
+            query_length=len(query),
+            total_documents=total_found,
+            relevant_documents=relevant_count,
+            precision_score=precision_score,
+            collection_name=collection_name,
+            score_threshold=score_threshold
+        )
     
     return VectorSearchResult(
         documents=documents,
         total_found=total_found,
-        avg_score=avg_score
+        precision_score=precision_score
     )
 
 
@@ -561,6 +618,7 @@ class VectorRAGAgent:
                     "query": query,
                     "qdrant_client": self.qdrant_client,
                     "embeddings": self.embeddings,
+                    "llm": self.llm,
                     "collection_name": self.collection_name,
                     "limit": 10,
                     "score_threshold": 0.6
@@ -586,7 +644,7 @@ class VectorRAGAgent:
                 logger.info(
                     "vector_retrieval_function_calling",
                     documents_retrieved=len(documents),
-                    avg_score=search_result.avg_score,
+                    precision_score=search_result.precision_score,
                     reranking_applied=reranking_applied,
                     trace_id=state.get('trace_id')
                 )

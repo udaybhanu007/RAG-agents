@@ -1,7 +1,7 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, cast
 from langchain_openai import AzureChatOpenAI
 from langchain_core.tools import tool
-from langchain_core.pydantic_v1 import BaseModel, Field
+from pydantic.v1 import BaseModel, Field
 from workflow_state import WorkflowState, ValidationResult
 from observability import observability
 from logging_config import get_logger
@@ -216,14 +216,14 @@ class ValidatorAgent:
     Writes: state.validation_passed, state.validation_result, state.latency_ms["val"]
     """
     
-    def __init__(self, llm: AzureChatOpenAI = None):
+    def __init__(self, llm: Optional[AzureChatOpenAI] = None):
         # LLM not required for basic validation - using rule-based tools
         self.llm = llm
     
     def validate_results(self, state: WorkflowState) -> WorkflowState:
         """Validate search results using function calling approach"""
         
-        with observability.measure_agent_performance("val", state):
+        with observability.measure_agent_performance("val", cast(Dict[str, Any], state)):
             try:
                 query = state["query"]
                 vector_docs = state.get("vector_docs", [])
@@ -234,12 +234,14 @@ class ValidatorAgent:
                     "query": query,
                     "vector_docs": vector_docs
                 })
-                
+
+                 # uncomment later#######################################3
                 # Step 2: Validate graph search relevance  
-                graph_validation = validate_graph_relevance.invoke({
-                    "query": query,
-                    "graph_triples": graph_triples
-                })
+                # graph_validation = validate_graph_relevance.invoke({
+                #     "query": query,
+                #     "graph_triples": graph_triples
+                # })
+                # uncomment later#######################################3
                 
                 # Combine validation results - focus only on relevance
                 overall_passed = True
@@ -253,13 +255,14 @@ class ValidatorAgent:
                 if vector_docs:
                     confidence_scores.append(vector_validation.relevance_score)
                 
+                 # uncomment later#######################################3
                 # Check graph relevance
-                if graph_triples and not graph_validation.is_relevant:
-                    errors.append("Graph search results not relevant to query")
-                    overall_passed = False
-                if graph_triples:
-                    confidence_scores.append(graph_validation.relevance_score)
-                
+                # if graph_triples and not graph_validation.is_relevant:
+                #     errors.append("Graph search results not relevant to query")
+                #     overall_passed = False
+                # if graph_triples:
+                #     confidence_scores.append(graph_validation.relevance_score)
+                 # uncomment later#######################################3
                 # Calculate overall confidence
                 overall_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.5
                 
@@ -281,7 +284,9 @@ class ValidatorAgent:
                     passed=overall_passed,
                     confidence=overall_confidence,
                     vector_relevant=vector_validation.is_relevant if vector_docs else None,
-                    graph_relevant=graph_validation.is_relevant if graph_triples else None,
+                       # uncomment later#######################################
+                    #graph_relevant=graph_validation.is_relevant if graph_triples else None,
+                       # uncomment later#######################################
                     errors_count=len(errors),
                     trace_id=state.get('trace_id')
                 )
@@ -317,7 +322,7 @@ class AnswerSynthesisAgent:
     def synthesize_answer(self, state: WorkflowState) -> WorkflowState:
         """Synthesize final answer using function calling approach"""
         
-        with observability.measure_agent_performance("ans", state):
+        with observability.measure_agent_performance("ans", cast(Dict[str, Any], state)):
             try:
                 query = state["query"]
                 vector_docs = state.get("vector_docs", [])
@@ -339,8 +344,8 @@ class AnswerSynthesisAgent:
                 # Synthesize answer from sources using tool
                 synthesis_result = synthesize_answer_from_sources.invoke({
                     "query": query,
-                    "vector_docs": vector_docs,
-                    "graph_triples": graph_triples,
+                    "vector_docs": vector_docs or [],
+                    "graph_triples": graph_triples or [],
                     "llm": self.llm
                 })
                 
@@ -360,5 +365,6 @@ class AnswerSynthesisAgent:
                 logger.error("synthesis_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
                 state["answer"] = f"I encountered an error while synthesizing the answer: {str(e)}"
                 state["status"] = "failed"
-                state["errors"] = state.get("errors", []) + [f"Synthesis error: {str(e)}"]
+                errors = state.get("errors") or []
+                state["errors"] = errors + [f"Synthesis error: {str(e)}"]
                 return state

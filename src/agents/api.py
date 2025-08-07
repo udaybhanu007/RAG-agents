@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import uvicorn
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from multi_agent_rag_workflow import MultiAgentRAGWorkflow
+from .multi_agent_rag_workflow import MultiAgentRAGWorkflow
 from logging_config import get_logger
 
 # Configure the API

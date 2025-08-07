@@ -22,6 +22,8 @@ class WorkflowState(TypedDict):
     
     # Routing decision
     route: Optional[str]  # "vector", "graph", "both", "none"
+    routing_analysis: Optional[str]  # Analysis details
+    routing_confidence: Optional[str]  # Confidence level
     
     # Retrieved data from different sources
     vector_docs: Optional[List[Dict[str, Any]]]
@@ -34,6 +36,7 @@ class WorkflowState(TypedDict):
     
     # Final synthesized output
     answer: Optional[str]
+    final_answer: Optional[str]  # Add this field
     
     # Performance metrics per agent
     latency_ms: Dict[str, float]  # {"orch": 150, "vec": 300, "graph": 450, "val": 100, "ans": 200}
@@ -52,7 +55,7 @@ class WorkflowState(TypedDict):
     metrics: Optional[Dict[str, Any]]
 
 
-def create_initial_state(query: str, session_id: str = None) -> WorkflowState:
+def create_initial_state(query: str, session_id: Optional[str] = None) -> WorkflowState:
     """
     Create initial workflow state for Happy Path flow
     
@@ -62,12 +65,15 @@ def create_initial_state(query: str, session_id: str = None) -> WorkflowState:
         query=query,
         session_id=session_id or f"session_{int(time.time())}",
         route=None,
+        routing_analysis=None,
+        routing_confidence=None,
         vector_docs=None,
         graph_triples=None,
         validation_passed=None,
         validation_errors=None,
         validation_result=None,
         answer=None,
+        final_answer=None,
         latency_ms={},
         memory_usage={},
         timestamp=datetime.now().isoformat(),

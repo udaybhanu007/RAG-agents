@@ -1,16 +1,20 @@
 import os
+from typing import cast, Dict, Any
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from qdrant_client import QdrantClient
 from neo4j import GraphDatabase
-
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.retrievers import BM25Retriever
+from langchain.schema import Document
 # Import our custom modules
 from workflow_state import WorkflowState, create_initial_state
 from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent
 from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
 from observability import observability
 from logging_config import configure_logging, get_logger
+from sentence_transformers import SentenceTransformer
 
 # Load environment variables
 load_dotenv()
@@ -31,16 +35,21 @@ class MultiAgentRAGWorkflow:
     
     This implements the clean happy path flow:
     - Orchestrator Agent (routing)
-    - Vector-RAG Agent (Qdrant search)
+    - Vector-RAG Agent (Qdrant search with optional BM25 hybrid)
     - Graph-RAG Agent (Neo4j queries)
     - Validator Agent (consistency checking)
     - Answer Synthesis Agent (final composition)
     - Observability (metrics and logging)
     
+    BM25 Integration Options:
+    - eager_bm25_init=True: Initialize BM25 at startup (default)
+    - eager_bm25_init=False: Disable BM25, use vector-only search
+    
     Focus: Clean, simple implementation without retry complexity
     """
     
-    def __init__(self):
+    def __init__(self, eager_bm25_init: bool = True):
+        self.eager_bm25_init = eager_bm25_init
         self.initialize_components()
         self.build_workflow()
     
@@ -55,14 +64,21 @@ class MultiAgentRAGWorkflow:
             )
             
             # Initialize embeddings
-            self.embeddings = AzureOpenAIEmbeddings(
-                azure_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002"),
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+            # model_name ='all-MiniLM-L6-v2'
+            # self.embeddings =SentenceTransformer(model_name)
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                model_kwargs={'device': 'cpu'}
             )
+        
+            # self.embeddings = AzureOpenAIEmbeddings(
+            #     azure_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002"),
+            #     api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+            # )
             
             # Initialize Qdrant client
             self.qdrant_client = QdrantClient(
-                url=os.getenv("QDRANT_URL", "http://localhost:6333"),
+                url=os.getenv("QDRANT_API_URL", "http://localhost:6333"),
                 api_key=os.getenv("QDRANT_API_KEY")
             )
             
@@ -75,23 +91,91 @@ class MultiAgentRAGWorkflow:
                 )
             )
             
+            # Initialize BM25 retriever (configurable initialization)
+            if self.eager_bm25_init:
+                # Initialize BM25 at startup
+                self.bm25_retriever = self._initialize_bm25_retriever()
+                logger.info("bm25_initialization_strategy", strategy="eager", success=self.bm25_retriever is not None)
+            else:
+                # Skip BM25 initialization - will use vector-only search
+                self.bm25_retriever = None
+                logger.info("bm25_initialization_strategy", strategy="disabled")
+            
             # Initialize all agents
             self.orchestrator = OrchestratorAgent()  # No LLM needed
             self.vector_rag = VectorRAGAgent(
                 self.qdrant_client, 
                 self.embeddings,
                 collection_name=os.getenv("QDRANT_COLLECTION", "documents"),
-                llm=self.llm
+                llm=self.llm,
+                bm25_retriever=self.bm25_retriever
             )
             self.graph_rag = GraphRAGAgent(self.neo4j_driver, self.llm)
             self.validator = ValidatorAgent()  # No LLM needed for rule-based validation
             self.synthesizer = AnswerSynthesisAgent(self.llm)
             
-            logger.info("workflow_components_initialized")
+            logger.info("workflow_components_initialized", bm25_enabled=self.bm25_retriever is not None)
             
         except Exception as e:
             logger.error("component_initialization_failed", error=str(e))
             raise
+    
+    def _initialize_bm25_retriever(self):
+        """
+        Initialize BM25 retriever from Qdrant documents.
+        Simple implementation that fetches documents and creates BM25 index.
+        """
+        try:
+            # Basic validation
+            if not hasattr(self, 'qdrant_client') or self.qdrant_client is None:
+                logger.error("bm25_initialization_failed", error="qdrant_client not available")
+                return None
+            
+            collection_name = os.getenv("QDRANT_COLLECTION", "documents")
+            
+            # Fetch documents from Qdrant
+            scroll_result = self.qdrant_client.scroll(
+                collection_name=collection_name,
+                limit=500,  # Reasonable limit for BM25 indexing
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            points, _ = scroll_result
+            
+            if not points:
+                logger.warning("no_documents_found_for_bm25", collection=collection_name)
+                return None
+            
+            # Convert to LangChain Documents
+            documents = []
+            for point in points:
+                content = point.payload.get("chunk", "")
+                metadata = point.payload.get("metadata", {})
+                
+                if content.strip():  # Only non-empty content
+                    documents.append(Document(
+                        page_content=content,
+                        metadata=metadata
+                    ))
+            
+            if not documents:
+                logger.warning("no_valid_documents_for_bm25")
+                return None
+            
+            # Create BM25 retriever
+            bm25_retriever = BM25Retriever.from_documents(documents)
+            bm25_retriever.k = 10
+            
+            logger.info("bm25_retriever_initialized", 
+                       document_count=len(documents), 
+                       collection=collection_name)
+            
+            return bm25_retriever
+            
+        except Exception as e:
+            logger.error("bm25_initialization_failed", error=str(e))
+            return None  # Graceful fallback to vector-only search
     
     def build_workflow(self):
         """
@@ -160,7 +244,7 @@ class MultiAgentRAGWorkflow:
         Orchestrator agent node - Simple routing decision
         Measures performance and logs routing decisions
         """
-        with observability.measure_agent_performance("orch", state):
+        with observability.measure_agent_performance("orch", cast(Dict[str, Any], state)):
             result = self.orchestrator.route_query(state)
             return result
     
@@ -169,7 +253,7 @@ class MultiAgentRAGWorkflow:
         Vector RAG agent node - Simple semantic search
         Performs search using Qdrant vector database
         """
-        with observability.measure_agent_performance("vec", state):
+        with observability.measure_agent_performance("vec", cast(Dict[str, Any], state)):
             result = self.vector_rag.retrieve_documents(state)
             return result
     
@@ -178,7 +262,7 @@ class MultiAgentRAGWorkflow:
         Graph RAG agent node - Simple graph queries
         Performs knowledge graph queries using Neo4j
         """
-        with observability.measure_agent_performance("graph", state):
+        with observability.measure_agent_performance("graph", cast(Dict[str, Any], state)):
             result = self.graph_rag.extract_and_query(state)
             return result
     
@@ -187,7 +271,7 @@ class MultiAgentRAGWorkflow:
         Validator agent node - Simple consistency checking
         Happy path: validation should generally pass
         """
-        with observability.measure_agent_performance("val", state):
+        with observability.measure_agent_performance("val", cast(Dict[str, Any], state)):
             result = self.validator.validate_results(state)
             return result
     
@@ -196,7 +280,7 @@ class MultiAgentRAGWorkflow:
         Answer synthesis agent node - Final answer composition
         Creates comprehensive answer without citations
         """
-        with observability.measure_agent_performance("ans", state):
+        with observability.measure_agent_performance("ans", cast(Dict[str, Any], state)):
             result = self.synthesizer.synthesize_answer(state)
             return result
     
@@ -245,7 +329,7 @@ class MultiAgentRAGWorkflow:
             result = self.workflow.invoke(initial_state)
             
             # Extract final answer
-            final_answer = result.get("final_answer", "No answer generated")
+            final_answer = result.get("answer", "No answer generated")
             
             logger.info("workflow_completed", answer_length=len(final_answer))
             
@@ -265,8 +349,8 @@ def main():
         workflow = MultiAgentRAGWorkflow()
         
         # Example query
-        query = "What are the key principles of machine learning?"
-        
+        #query = "What is NIH Chest X-ray?"
+        query ="provide concerns about the image label accuracy"
         print(f"Query: {query}")
         print("=" * 50)
         
@@ -283,3 +367,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

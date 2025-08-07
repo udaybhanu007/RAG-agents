@@ -10,7 +10,7 @@ from qdrant_client import QdrantClient
 from workflow_state import WorkflowState
 from observability import observability
 from logging_config import get_logger
-
+from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
 logger = get_logger("agents")
 
 
@@ -56,6 +56,10 @@ class GraphQueryResult(BaseModel):
     queries_executed: int = Field(description="Number of Cypher queries executed")
     scenario_used: str = Field(description="Query scenario that was applied")
 
+class QueryValidation(BaseModel):
+    """Simple query validation for medical relevance"""
+    is_medical: bool = Field(description="Whether query is medical/healthcare related")
+    quick_response: Optional[str] = Field(description="Response for non-medical queries")
 
 class HybridSearchResult(BaseModel):
     """Hybrid search result combining vector and BM25"""
@@ -65,6 +69,63 @@ class HybridSearchResult(BaseModel):
     total_found: int = Field(description="Total unique documents after merging")
     search_strategy: str = Field(description="Strategy used: vector_only, bm25_only, or hybrid")
     precision_score: Optional[float] = Field(description="Hybrid precision score")
+
+
+@tool
+def validate_medical_relevance(query: str, llm) -> QueryValidation:
+    """
+    Simple validation to check if query is medical/healthcare related using LLM.
+    
+    Args:
+        query: The user query to validate
+        llm: LLM instance for classification
+        
+    Returns:
+        QueryValidation with medical relevance assessment
+    """
+    
+    validation_prompt = """
+You are a medical query classifier. Determine if this query is medical/healthcare related.
+
+MEDICAL/HEALTHCARE queries include:
+- Medical conditions, diseases, symptoms, treatments
+- Anatomy, physiology, medications, procedures
+- Healthcare systems, medical diagnostics
+- Patient care, clinical scenarios
+
+NON-MEDICAL queries include:
+- General greetings, technology, programming
+- Sports, entertainment, travel, cooking
+- Business, finance, academic (non-medical)
+
+Query: "{query}"
+
+Respond with only:
+MEDICAL or NON_MEDICAL
+"""
+
+    try:
+        response = llm.invoke(validation_prompt.format(query=query))
+        content = response.content.strip().upper()
+        
+        is_medical = "MEDICAL" in content
+        
+        quick_response = None
+        if not is_medical:
+            quick_response = "I'm a medical knowledge assistant specialized in healthcare topics. Please ask me questions about medical conditions, treatments, symptoms, or other healthcare-related matters."
+        
+        return QueryValidation(
+            is_medical=is_medical,
+            quick_response=quick_response
+        )
+        
+    except Exception as e:
+        logger.warning("llm_validation_failed", error=str(e))
+        # Conservative fallback - assume medical to avoid blocking valid queries
+        return QueryValidation(
+            is_medical=True,
+            quick_response=None
+        )
 
 
 # Function calling tools for OrchestratorAgent
@@ -829,7 +890,7 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
         )
 
 
-class OrchestratorAgent:
+class OrchestratorAgent(SecureAgentBase):
     """
     Simplified Function-Calling Orchestrator Agent
     Routes queries using direct tool execution for fast, reliable routing
@@ -837,27 +898,50 @@ class OrchestratorAgent:
     Writes: state.route, state.latency_ms["orch"]
     """
     
-    def __init__(self):
+    def __init__(self,  llm: Optional[AzureChatOpenAI] = None):
+         super().__init__(AgentRole.ORCHESTRATOR)
+         self.llm = llm
         # No dependencies needed - routing uses deterministic tools
-        pass
+        #pass
     
     def route_query(self, state: WorkflowState) -> WorkflowState:
-        """Route the query using function calling approach"""
+        """Route the query with medical validation using function calling approach"""
         
         with observability.measure_agent_performance("orch", cast(Dict[str, Any], state)):
             try:
                 query = state["query"]
                 
-                # Direct tool execution - no need for complex LLM orchestration
-                # Step 1: Analyze query characteristics
-                analysis_result = analyze_query_characteristics.invoke({"query": query})
+                # Step 1: Validate if query is medical/healthcare related (only if LLM available)
+                if self.llm:
+                    validation_result = self.invoke_tool("validate_medical_relevance", {
+                        "query": query,
+                        "llm": self.llm
+                    })
+                    
+                    # Handle non-medical queries immediately
+                    if not validation_result.is_medical:
+                        state["route"] = "none"
+                        state["routing_analysis"] = "Non-medical query detected"
+                        state["final_answer"] = validation_result.quick_response
+                        state["bypass_retrieval"] = True
+                        
+                        logger.info(
+                            "orchestrator_non_medical_query",
+                            query_length=len(query),
+                            trace_id=state.get('trace_id')
+                        )
+                        
+                        return state
                 
-                # Step 2: Determine optimal route based on analysis
-                routing_result = determine_optimal_route.invoke({"analysis": analysis_result})
+                # Step 2: For medical queries, proceed with normal routing
+                # Analyze query characteristics
+                analysis_result = self.invoke_tool("analyze_query_characteristics", {"query": query})
                 
-                # Extract routing information (tools always return valid results)
+                # Determine optimal route based on analysis
+                routing_result = self.invoke_tool("determine_optimal_route", {"analysis": analysis_result})
+                
+                # Extract routing information
                 route = routing_result.route
-                confidence = routing_result.confidence
                 reasoning = routing_result.reasoning
                 
                 # Create analysis summary
@@ -866,14 +950,13 @@ class OrchestratorAgent:
                 # Update state with routing information
                 state["route"] = route
                 state["routing_analysis"] = analysis
-                state["routing_confidence"] = confidence
+                state["bypass_retrieval"] = False
                 
                 logger.info(
-                    "orchestrator_routing_simplified",
+                    "orchestrator_medical_routing",
                     route=route,
                     reasoning=reasoning,
                     analysis=analysis,
-                    confidence=confidence,
                     query_length=len(query),
                     trace_id=state.get('trace_id')
                 )
@@ -882,15 +965,14 @@ class OrchestratorAgent:
                 
             except Exception as e:
                 logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
+                state["errors"] = state.get("errors", []) + [f"Orchestrator function calling error: {str(e)}"]
                 state["route"] = "both"  # Safe fallback
                 state["routing_analysis"] = "Error during analysis"
-                state["routing_confidence"] = "LOW"
+                state["bypass_retrieval"] = False
                 return state
 
 
-class VectorRAGAgent:
+class VectorRAGAgent(SecureAgentBase):
     """
     Function-Calling Hybrid Search Agent
     Performs semantic search with optional BM25 integration and reranking
@@ -901,6 +983,7 @@ class VectorRAGAgent:
     def __init__(self, qdrant_client: QdrantClient, embeddings: Any, 
                  collection_name: str = "documents", llm: Optional[AzureChatOpenAI] = None,
                  bm25_retriever: Optional[BM25Retriever] = None):
+        super().__init__(AgentRole.VECTOR_RAG)
         self.qdrant_client = qdrant_client
         self.embeddings = embeddings
         self.collection_name = collection_name
@@ -917,7 +1000,7 @@ class VectorRAGAgent:
                 # Step 1: Perform hybrid search (vector + BM25) using tool
                 if self.bm25_retriever:
                     # Use hybrid search when BM25 is available
-                    search_result = perform_hybrid_search.invoke({
+                    search_result = self.invoke_tool("perform_hybrid_search", {
                         "query": query,
                         "qdrant_client": self.qdrant_client,
                         "embeddings": self.embeddings,
@@ -936,7 +1019,7 @@ class VectorRAGAgent:
                     
                 else:
                     # Fallback to vector-only search
-                    vector_result = perform_vector_search.invoke({
+                    vector_result = self.invoke_tool("perform_vector_search", {
                         "query": query,
                         "qdrant_client": self.qdrant_client,
                         "embeddings": self.embeddings,
@@ -988,7 +1071,7 @@ class VectorRAGAgent:
                 return state
 
 
-class GraphRAGAgent:
+class GraphRAGAgent(SecureAgentBase):
     """
     Function-Calling Graph RAG Agent
     Performs entity extraction and graph queries using direct tool execution
@@ -997,6 +1080,7 @@ class GraphRAGAgent:
     """
     
     def __init__(self, neo4j_driver, llm: AzureChatOpenAI):
+        super().__init__(AgentRole.GRAPH_RAG)
         self.driver = neo4j_driver
         self.llm = llm
     
@@ -1008,13 +1092,13 @@ class GraphRAGAgent:
                 query = state["query"]
                 
                 # Step 1: Extract entities, relationships, and concepts
-                extraction_result = extract_entities_from_query.invoke({
+                extraction_result = self.invoke_tool("extract_entities_from_query", {
                     "query": query,
                     "llm": self.llm
                 })
                 
                 # Step 2: Execute graph queries based on extraction
-                graph_result = execute_graph_queries.invoke({
+                graph_result = self.invoke_tool("execute_graph_queries", {
                     "extraction": extraction_result,
                     "neo4j_driver": self.driver
                 })
@@ -1041,3 +1125,52 @@ class GraphRAGAgent:
                 state["errors"] = errors + [f"Graph RAG error: {str(e)}"]
                 state["graph_triples"] = []
                 return state
+
+# Register all tools with access control
+def register_agent_tools():
+    """Register all tools with their allowed agent roles"""
+    
+    # Orchestrator tools
+    tool_registry.register_tool(
+        validate_medical_relevance,
+        ToolMetadata("validate_medical_relevance", [AgentRole.ORCHESTRATOR])
+    )
+    tool_registry.register_tool(
+        analyze_query_characteristics,
+        ToolMetadata("analyze_query_characteristics", [AgentRole.ORCHESTRATOR])
+    )
+    tool_registry.register_tool(
+        determine_optimal_route,
+        ToolMetadata("determine_optimal_route", [AgentRole.ORCHESTRATOR])
+    )
+    
+    # Vector RAG tools
+    tool_registry.register_tool(
+        perform_vector_search,
+        ToolMetadata("perform_vector_search", [AgentRole.VECTOR_RAG])
+    )
+    tool_registry.register_tool(
+        perform_hybrid_search,
+        ToolMetadata("perform_hybrid_search", [AgentRole.VECTOR_RAG])
+    )
+    tool_registry.register_tool(
+        assess_document_relevance,
+        ToolMetadata("assess_document_relevance", [AgentRole.VECTOR_RAG])
+    )
+    tool_registry.register_tool(
+        rerank_documents_by_relevance,
+        ToolMetadata("rerank_documents_by_relevance", [AgentRole.VECTOR_RAG])
+    )
+    
+    # Graph RAG tools
+    tool_registry.register_tool(
+        extract_entities_from_query,
+        ToolMetadata("extract_entities_from_query", [AgentRole.GRAPH_RAG])
+    )
+    tool_registry.register_tool(
+        execute_graph_queries,
+        ToolMetadata("execute_graph_queries", [AgentRole.GRAPH_RAG])
+    )
+
+# Initialize tool registry
+register_agent_tools()

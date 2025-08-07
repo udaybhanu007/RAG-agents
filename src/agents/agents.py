@@ -424,10 +424,20 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
         
         for result in vector_results:
             if result.score >= score_threshold:  # Apply final threshold
+                # Extract metadata directly from payload since it's not nested
+                metadata = {
+                    "file_path": result.payload.get("file_path", ""),
+                    "created_date": result.payload.get("created_date", ""),
+                }
+                # Include any additional payload items that aren't chunk or the metadata fields
+                for key, value in result.payload.items():
+                    if key not in ["chunk", "file_path", "created_date"]:
+                        metadata[key] = value
+                
                 doc = {
                     "id": f"vec_{result.id}",
                     "content": result.payload.get("chunk", ""),
-                    "metadata": result.payload.get("metadata", {}),
+                    "metadata": metadata,
                     "score": float(result.score),
                     "source": "vector_search",
                     "search_type": "vector"
@@ -736,10 +746,20 @@ def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, colle
     # Convert results to standard format
     documents = []
     for result in search_results:
+        # Extract metadata directly from payload since it's not nested
+        metadata = {
+            "file_path": result.payload.get("file_path", ""),
+            "created_date": result.payload.get("created_date", ""),
+        }
+        # Include any additional payload items that aren't chunk or the metadata fields
+        for key, value in result.payload.items():
+            if key not in ["chunk", "file_path", "created_date"]:
+                metadata[key] = value
+        
         doc = {
             "id": result.id,
             "content": result.payload.get("chunk", ""),
-            "metadata": result.payload.get("metadata", {}),
+            "metadata": metadata,
             "score": float(result.score),
             "source": "vector_store"
         }
@@ -1038,8 +1058,9 @@ class VectorRAGAgent(SecureAgentBase):
                 # Step 2: Optional additional reranking if LLM available and enough documents
                 reranking_applied = False
                 if self.llm and len(documents) > 3 and not self.bm25_retriever:
-                    # Only do additional reranking if we haven't already done hybrid scoring
-                    rerank_result = rerank_documents_by_relevance.invoke({
+                    # Only do additional reranking if we haven't already done hybrid scoring                    
+                    rerank_result = self.invoke_tool("rerank_documents_by_relevance", {
+
                         "query": query,
                         "documents": documents,
                         "llm": self.llm

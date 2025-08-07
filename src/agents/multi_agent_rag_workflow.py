@@ -10,7 +10,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.schema import Document
 # Import our custom modules
 from workflow_state import WorkflowState, create_initial_state
-from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent
+from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent # type: ignore
 from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
 from observability import observability
 from logging_config import configure_logging, get_logger

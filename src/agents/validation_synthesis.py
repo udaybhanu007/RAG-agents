@@ -5,6 +5,7 @@ from pydantic.v1 import BaseModel, Field
 from workflow_state import WorkflowState, ValidationResult
 from observability import observability
 from logging_config import get_logger
+from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
 import re
 
 logger = get_logger("validation_synthesis")
@@ -308,7 +309,7 @@ class ValidatorAgent:
                 return state
 
 
-class AnswerSynthesisAgent:
+class AnswerSynthesisAgent(SecureAgentBase):
     """
     Function-Calling Answer Synthesis Agent
     Synthesizes comprehensive answers from validated search results using direct tool execution
@@ -317,6 +318,7 @@ class AnswerSynthesisAgent:
     """
     
     def __init__(self, llm: AzureChatOpenAI):
+        super().__init__(AgentRole.SYNTHESIZER)
         self.llm = llm
     
     def synthesize_answer(self, state: WorkflowState) -> WorkflowState:
@@ -342,7 +344,7 @@ class AnswerSynthesisAgent:
                     return state
                 
                 # Synthesize answer from sources using tool
-                synthesis_result = synthesize_answer_from_sources.invoke({
+                synthesis_result = self.invoke_tool("synthesize_answer_from_sources", {
                     "query": query,
                     "vector_docs": vector_docs or [],
                     "graph_triples": graph_triples or [],
@@ -368,3 +370,25 @@ class AnswerSynthesisAgent:
                 errors = state.get("errors") or []
                 state["errors"] = errors + [f"Synthesis error: {str(e)}"]
                 return state
+
+def register_validation_synthesis_tools():
+    """Register validation and synthesis tools with their allowed agent roles"""
+    
+    # Validator tools
+    tool_registry.register_tool(
+        validate_vector_relevance,
+        ToolMetadata("validate_vector_relevance", [AgentRole.VALIDATOR])
+    )
+    tool_registry.register_tool(
+        validate_graph_relevance,
+        ToolMetadata("validate_graph_relevance", [AgentRole.VALIDATOR])
+    )
+    
+    # Synthesizer tools
+    tool_registry.register_tool(
+        synthesize_answer_from_sources,
+        ToolMetadata("synthesize_answer_from_sources", [AgentRole.SYNTHESIZER])
+    )
+
+# Initialize tool registry for validation and synthesis
+register_validation_synthesis_tools()

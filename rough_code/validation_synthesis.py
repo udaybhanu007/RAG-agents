@@ -5,6 +5,7 @@ from langchain_core.pydantic_v1 import BaseModel, Field
 from workflow_state import WorkflowState, ValidationResult
 from observability import observability
 from logging_config import get_logger
+from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
 import re
 
 logger = get_logger("validation_synthesis")
@@ -208,7 +209,7 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
         )
 
 
-class ValidatorAgent:
+class ValidatorAgent(SecureAgentBase):
     """
     Function-Calling Validator Agent
     Validates relevance of search results using direct tool execution
@@ -217,6 +218,7 @@ class ValidatorAgent:
     """
     
     def __init__(self, llm: AzureChatOpenAI = None):
+        super().__init__(AgentRole.VALIDATOR)
         # LLM not required for basic validation - using rule-based tools
         self.llm = llm
     
@@ -254,13 +256,13 @@ class ValidatorAgent:
                     return state
                 
                 # Step 1: Validate vector search relevance
-                vector_validation = validate_vector_relevance.invoke({
+                vector_validation = self.invoke_tool("validate_vector_relevance", {
                     "query": query,
                     "vector_docs": vector_docs
                 })
                 
                 # Step 2: Validate graph search relevance  
-                graph_validation = validate_graph_relevance.invoke({
+                graph_validation = self.invoke_tool("validate_graph_relevance", {
                     "query": query,
                     "graph_triples": graph_triples
                 })
@@ -327,7 +329,7 @@ class ValidatorAgent:
                 return state
 
 
-class AnswerSynthesisAgent:
+class AnswerSynthesisAgent(SecureAgentBase):
     """
     Function-Calling Answer Synthesis Agent
     Synthesizes comprehensive answers from validated search results using direct tool execution
@@ -336,6 +338,7 @@ class AnswerSynthesisAgent:
     """
     
     def __init__(self, llm: AzureChatOpenAI):
+        super().__init__(AgentRole.SYNTHESIZER)
         self.llm = llm
     
     def synthesize_answer(self, state: WorkflowState) -> WorkflowState:
@@ -376,7 +379,7 @@ class AnswerSynthesisAgent:
                     return state
                 
                 # Synthesize answer from sources using tool
-                synthesis_result = synthesize_answer_from_sources.invoke({
+                synthesis_result = self.invoke_tool("synthesize_answer_from_sources", {
                     "query": query,
                     "vector_docs": vector_docs,
                     "graph_triples": graph_triples,
@@ -401,3 +404,27 @@ class AnswerSynthesisAgent:
                 state["status"] = "failed"
                 state["errors"] = state.get("errors", []) + [f"Synthesis error: {str(e)}"]
                 return state
+
+
+# Register validation and synthesis tools
+def register_validation_synthesis_tools():
+    """Register validation and synthesis tools with their allowed agent roles"""
+    
+    # Validator tools
+    tool_registry.register_tool(
+        validate_vector_relevance,
+        ToolMetadata("validate_vector_relevance", [AgentRole.VALIDATOR])
+    )
+    tool_registry.register_tool(
+        validate_graph_relevance,
+        ToolMetadata("validate_graph_relevance", [AgentRole.VALIDATOR])
+    )
+    
+    # Synthesizer tools
+    tool_registry.register_tool(
+        synthesize_answer_from_sources,
+        ToolMetadata("synthesize_answer_from_sources", [AgentRole.SYNTHESIZER])
+    )
+
+# Initialize tool registry for validation and synthesis
+register_validation_synthesis_tools()

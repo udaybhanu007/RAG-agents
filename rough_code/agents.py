@@ -7,6 +7,7 @@ from qdrant_client import QdrantClient
 from workflow_state import WorkflowState
 from observability import observability
 from logging_config import get_logger
+from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
 
 logger = get_logger("agents")
 
@@ -614,7 +615,7 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
         )
 
 
-class OrchestratorAgent:
+class OrchestratorAgent(SecureAgentBase):
     """
     Enhanced Function-Calling Orchestrator Agent with Medical Query Validation
     First validates if query is medical, then routes accordingly
@@ -623,6 +624,7 @@ class OrchestratorAgent:
     """
     
     def __init__(self, llm: AzureChatOpenAI = None):
+        super().__init__(AgentRole.ORCHESTRATOR)
         self.llm = llm  # LLM for medical validation
     
     def route_query(self, state: WorkflowState) -> WorkflowState:
@@ -634,7 +636,7 @@ class OrchestratorAgent:
                 
                 # Step 1: Validate if query is medical/healthcare related (only if LLM available)
                 if self.llm:
-                    validation_result = validate_medical_relevance.invoke({
+                    validation_result = self.invoke_tool("validate_medical_relevance", {
                         "query": query,
                         "llm": self.llm
                     })
@@ -656,10 +658,10 @@ class OrchestratorAgent:
                 
                 # Step 2: For medical queries, proceed with normal routing
                 # Analyze query characteristics
-                analysis_result = analyze_query_characteristics.invoke({"query": query})
+                analysis_result = self.invoke_tool("analyze_query_characteristics", {"query": query})
                 
                 # Determine optimal route based on analysis
-                routing_result = determine_optimal_route.invoke({"analysis": analysis_result})
+                routing_result = self.invoke_tool("determine_optimal_route", {"analysis": analysis_result})
                 
                 # Extract routing information
                 route = routing_result.route
@@ -693,7 +695,7 @@ class OrchestratorAgent:
                 return state
 
 
-class VectorRAGAgent:
+class VectorRAGAgent(SecureAgentBase):
     """
     Function-Calling Vector RAG Agent
     Performs semantic search and reranking using direct tool execution
@@ -703,6 +705,7 @@ class VectorRAGAgent:
     
     def __init__(self, qdrant_client: QdrantClient, embeddings: AzureOpenAIEmbeddings, 
                  collection_name: str = "documents", llm: AzureChatOpenAI = None):
+        super().__init__(AgentRole.VECTOR_RAG)
         self.qdrant_client = qdrant_client
         self.embeddings = embeddings
         self.collection_name = collection_name
@@ -716,7 +719,7 @@ class VectorRAGAgent:
                 query = state["query"]
                 
                 # Step 1: Perform vector search using tool
-                search_result = perform_vector_search.invoke({
+                search_result = self.invoke_tool("perform_vector_search", {
                     "query": query,
                     "qdrant_client": self.qdrant_client,
                     "embeddings": self.embeddings,
@@ -730,7 +733,7 @@ class VectorRAGAgent:
                 
                 # Step 2: Optional reranking if LLM available and enough real documents
                 if self.llm and len(documents) > 3:
-                    rerank_result = rerank_documents_by_relevance.invoke({
+                    rerank_result = self.invoke_tool("rerank_documents_by_relevance", {
                         "query": query,
                         "documents": documents,
                         "llm": self.llm
@@ -760,7 +763,7 @@ class VectorRAGAgent:
                 return state
 
 
-class GraphRAGAgent:
+class GraphRAGAgent(SecureAgentBase):
     """
     Function-Calling Graph RAG Agent
     Performs entity extraction and graph queries using direct tool execution
@@ -769,6 +772,7 @@ class GraphRAGAgent:
     """
     
     def __init__(self, neo4j_driver, llm: AzureChatOpenAI):
+        super().__init__(AgentRole.GRAPH_RAG)
         self.driver = neo4j_driver
         self.llm = llm
     
@@ -780,13 +784,13 @@ class GraphRAGAgent:
                 query = state["query"]
                 
                 # Step 1: Extract entities, relationships, and concepts
-                extraction_result = extract_entities_from_query.invoke({
+                extraction_result = self.invoke_tool("extract_entities_from_query", {
                     "query": query,
                     "llm": self.llm
                 })
                 
                 # Step 2: Execute graph queries based on extraction
-                graph_result = execute_graph_queries.invoke({
+                graph_result = self.invoke_tool("execute_graph_queries", {
                     "extraction": extraction_result,
                     "neo4j_driver": self.driver
                 })
@@ -812,3 +816,49 @@ class GraphRAGAgent:
                 state["errors"] = state.get("errors", []) + [f"Graph RAG error: {str(e)}"]
                 state["graph_triples"] = []
                 return state
+
+
+# Register all tools with access control
+def register_agent_tools():
+    """Register all tools with their allowed agent roles"""
+    
+    # Orchestrator tools
+    tool_registry.register_tool(
+        validate_medical_relevance,
+        ToolMetadata("validate_medical_relevance", [AgentRole.ORCHESTRATOR])
+    )
+    tool_registry.register_tool(
+        analyze_query_characteristics,
+        ToolMetadata("analyze_query_characteristics", [AgentRole.ORCHESTRATOR])
+    )
+    tool_registry.register_tool(
+        determine_optimal_route,
+        ToolMetadata("determine_optimal_route", [AgentRole.ORCHESTRATOR])
+    )
+    
+    # Vector RAG tools
+    tool_registry.register_tool(
+        perform_vector_search,
+        ToolMetadata("perform_vector_search", [AgentRole.VECTOR_RAG])
+    )
+    tool_registry.register_tool(
+        assess_document_relevance,
+        ToolMetadata("assess_document_relevance", [AgentRole.VECTOR_RAG])
+    )
+    tool_registry.register_tool(
+        rerank_documents_by_relevance,
+        ToolMetadata("rerank_documents_by_relevance", [AgentRole.VECTOR_RAG])
+    )
+    
+    # Graph RAG tools
+    tool_registry.register_tool(
+        extract_entities_from_query,
+        ToolMetadata("extract_entities_from_query", [AgentRole.GRAPH_RAG])
+    )
+    tool_registry.register_tool(
+        execute_graph_queries,
+        ToolMetadata("execute_graph_queries", [AgentRole.GRAPH_RAG])
+    )
+
+# Initialize tool registry
+register_agent_tools()

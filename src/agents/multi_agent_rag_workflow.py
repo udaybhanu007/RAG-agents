@@ -102,7 +102,7 @@ class MultiAgentRAGWorkflow:
                 logger.info("bm25_initialization_strategy", strategy="disabled")
             
             # Initialize all agents
-            self.orchestrator = OrchestratorAgent()  # No LLM needed
+            self.orchestrator = OrchestratorAgent(llm=self.llm)  # Pass LLM for medical validation
             self.vector_rag = VectorRAGAgent(
                 self.qdrant_client, 
                 self.embeddings,
@@ -350,7 +350,9 @@ def main():
         
         # Example query
         #query = "What is NIH Chest X-ray?"
-        query ="provide concerns about the image label accuracy"
+        query ="Provide concerns about the image label accuracy"
+        #query ="Tell me about the medical history of patient ID 1, including all findings and their progression"
+        #query ="Tell me about the medical history of patient ID 1, including all findings and their progression?"
         print(f"Query: {query}")
         print("=" * 50)
         

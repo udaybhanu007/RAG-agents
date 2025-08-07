@@ -106,7 +106,7 @@ MEDICAL or NON_MEDICAL
 
     try:
         response = llm.invoke(validation_prompt.format(query=query))
-        content = response.content.strip().upper()
+        content = str(response.content).strip().upper()
         
         is_medical = "MEDICAL" in content
         
@@ -130,50 +130,94 @@ MEDICAL or NON_MEDICAL
 
 # Function calling tools for OrchestratorAgent
 @tool
-def analyze_query_characteristics(query: str) -> QueryAnalysis:
+def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnalysis:
     """
-    Simple query analysis focused on routing decisions.
-    Uses minimal heuristics for fast, reliable routing.
+    Dynamic query analysis using LLM for better intent classification.
     
     Args:
         query: The user query to analyze
+        llm: LLM instance for dynamic analysis
         
     Returns:
         QueryAnalysis with intent, entity count, and relationship detection
     """
-    query_lower = query.lower()
     
-    # Simple intent detection using key patterns
-    if any(word in query_lower for word in ["compare", "versus", "vs", "difference", "similar", "contrast"]):
-        intent = "ANALYTICAL"
-    elif any(word in query_lower for word in ["relationship", "connect", "between", "relate", "link", "associate", "affect", "cause"]):
-        intent = "RELATIONAL"
-    else:
-        intent = "FACTUAL"  # Default for most queries
-    
-    # Simple entity count estimation
-    # Count potential medical/technical terms (capitalized words, medical suffixes)
-    import re
-    
-    # Look for medical-like terms and proper nouns
-    medical_suffixes = re.findall(r'\b\w+(megaly|itis|osis|emia|pathy)\b', query_lower)
-    proper_nouns = re.findall(r'\b[A-Z][a-z]+\b', query)
-    common_medical = ["chest", "lung", "heart", "brain", "x-ray", "ct", "mri", "scan"]
-    medical_words = [word for word in common_medical if word in query_lower]
-    
-    # Combine all potential entities
-    all_entities = medical_suffixes + proper_nouns + medical_words
-    entity_count = min(3, max(1, len(set(all_entities))))  # Cap at 3, minimum 1
-    
-    # Simple relationship detection
-    relationship_indicators = ["relationship", "connect", "between", "relate", "link", "associate", "depend", "affect", "cause"]
-    has_relationships = any(indicator in query_lower for indicator in relationship_indicators)
-    
-    return QueryAnalysis(
-        intent=intent,
-        entity_count=entity_count,
-        has_relationships=has_relationships
-    )
+    analysis_prompt = """
+Analyze this medical query and classify its characteristics:
+
+INTENT TYPES:
+- FACTUAL: Seeks specific facts, definitions, symptoms, procedures (What is...? How to...? When to...?)
+- RELATIONAL: Explores connections, relationships, interactions between entities (How does X affect Y? What's the relationship between...? X vs Y in terms of...)
+- ANALYTICAL: Requires comparison, evaluation, analysis of multiple aspects (Compare X and Y, Which is better, Analyze the differences, Evaluate effectiveness)
+
+ENTITY COUNT: Count distinct medical entities, conditions, procedures, demographics, or concepts:
+- Consider: patients, medical findings, conditions, procedures, timeframes, demographics
+- 1: Single primary entity (but may have related sub-entities)
+- 2: Two distinct main entities 
+- 3: Three or more main entities
+
+RELATIONSHIPS: Does the query ask about connections, correlations, or interactions?
+IMPORTANT: Medical queries often have implicit relationships:
+- Patient + findings = relationship (medical history, patient findings)
+- Condition + progression = relationship (disease progression) 
+- Findings + locations = relationship (anatomical relationships)
+- Patient + demographics = relationship (patient characteristics)
+- Time + changes = relationship (progression, evolution)
+
+Look for these relationship indicators:
+- Explicit: "relationship", "connection", "between", "affects", "causes", "leads to"
+- Implicit: "history", "progression", "findings", "characteristics", "demographics", "locations", "dimensions"
+- Temporal: "over time", "progression", "changes", "evolution"
+- Medical context: "patient + findings", "condition + symptoms", "treatment + outcomes"
+
+Query: "{query}"
+
+Respond in this exact format:
+INTENT: [FACTUAL|RELATIONAL|ANALYTICAL]
+ENTITY_COUNT: [1|2|3]
+HAS_RELATIONSHIPS: [true|false]
+REASONING: [Brief explanation focusing on entities and relationships detected]
+"""
+
+    try:
+        response = llm.invoke(analysis_prompt.format(query=query))
+        content = str(response.content).strip()
+        
+        # Parse LLM response
+        intent = "FACTUAL"  # Default
+        entity_count = 1
+        has_relationships = False
+        
+        for line in content.split('\n'):
+            line = line.strip()
+            if line.startswith('INTENT:'):
+                intent_value = line.split('INTENT:')[1].strip()
+                if intent_value in ["FACTUAL", "RELATIONAL", "ANALYTICAL"]:
+                    intent = intent_value
+            elif line.startswith('ENTITY_COUNT:'):
+                try:
+                    count_value = line.split('ENTITY_COUNT:')[1].strip()
+                    entity_count = min(3, max(1, int(count_value)))
+                except ValueError:
+                    entity_count = 1
+            elif line.startswith('HAS_RELATIONSHIPS:'):
+                rel_value = line.split('HAS_RELATIONSHIPS:')[1].strip().lower()
+                has_relationships = rel_value == 'true'
+        
+        return QueryAnalysis(
+            intent=intent,
+            entity_count=entity_count,
+            has_relationships=has_relationships
+        )
+        
+    except Exception as e:
+        logger.warning("llm_analysis_failed", error=str(e), query=query[:100])
+        # Conservative fallback with basic defaults
+        return QueryAnalysis(
+            intent="FACTUAL",
+            entity_count=1,
+            has_relationships=False
+        )
 
 
 # Function calling tools for GraphRAGAgent
@@ -918,11 +962,10 @@ class OrchestratorAgent(SecureAgentBase):
     Writes: state.route, state.latency_ms["orch"]
     """
     
-    def __init__(self,  llm: Optional[AzureChatOpenAI] = None):
-         super().__init__(AgentRole.ORCHESTRATOR)
-         self.llm = llm
-        # No dependencies needed - routing uses deterministic tools
-        #pass
+    def __init__(self, llm: Optional[AzureChatOpenAI] = None):
+        super().__init__(AgentRole.ORCHESTRATOR)
+        self.llm = llm
+        logger.info("orchestrator_agent_initialized", has_llm=self.llm is not None)
     
     def route_query(self, state: WorkflowState) -> WorkflowState:
         """Route the query with medical validation using function calling approach"""
@@ -931,31 +974,31 @@ class OrchestratorAgent(SecureAgentBase):
             try:
                 query = state["query"]
                 
-                # Step 1: Validate if query is medical/healthcare related (only if LLM available)
-                if self.llm:
-                    validation_result = self.invoke_tool("validate_medical_relevance", {
-                        "query": query,
-                        "llm": self.llm
-                    })
-                    
-                    # Handle non-medical queries immediately
-                    if not validation_result.is_medical:
-                        state["route"] = "none"
-                        state["routing_analysis"] = "Non-medical query detected"
-                        state["final_answer"] = validation_result.quick_response
-                        state["bypass_retrieval"] = True
-                        
-                        logger.info(
-                            "orchestrator_non_medical_query",
-                            query_length=len(query),
-                            trace_id=state.get('trace_id')
-                        )
-                        
-                        return state
+                # Step 1: Validate if query is medical/healthcare related
+                validation_result = self.invoke_tool("validate_medical_relevance", {
+                    "query": query,
+                    "llm": self.llm
+                })
                 
-                # Step 2: For medical queries, proceed with normal routing
-                # Analyze query characteristics
-                analysis_result = self.invoke_tool("analyze_query_characteristics", {"query": query})
+                # Handle non-medical queries immediately
+                if not validation_result.is_medical:
+                    state["route"] = "none"
+                    state["routing_analysis"] = "Non-medical query detected"
+                    state["final_answer"] = validation_result.quick_response
+                    
+                    logger.info(
+                        "orchestrator_non_medical_query",
+                        query_length=len(query),
+                        trace_id=state.get('trace_id')
+                    )
+                    
+                    return state
+                
+                # Step 2: For medical queries, analyze characteristics and route
+                analysis_result = self.invoke_tool("analyze_query_characteristics", {
+                    "query": query,
+                    "llm": self.llm
+                })
                 
                 # Determine optimal route based on analysis
                 routing_result = self.invoke_tool("determine_optimal_route", {"analysis": analysis_result})
@@ -970,7 +1013,6 @@ class OrchestratorAgent(SecureAgentBase):
                 # Update state with routing information
                 state["route"] = route
                 state["routing_analysis"] = analysis
-                state["bypass_retrieval"] = False
                 
                 logger.info(
                     "orchestrator_medical_routing",
@@ -985,10 +1027,10 @@ class OrchestratorAgent(SecureAgentBase):
                 
             except Exception as e:
                 logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                state["errors"] = state.get("errors", []) + [f"Orchestrator function calling error: {str(e)}"]
+                errors = state.get("errors") or []
+                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
                 state["route"] = "both"  # Safe fallback
                 state["routing_analysis"] = "Error during analysis"
-                state["bypass_retrieval"] = False
                 return state
 
 

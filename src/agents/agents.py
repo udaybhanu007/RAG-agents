@@ -4,7 +4,7 @@ from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_core.tools import tool
 from langchain_core.documents import Document
-from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import BM25Retriever
 from pydantic.v1 import BaseModel, Field
 from qdrant_client import QdrantClient
 from workflow_state import WorkflowState
@@ -52,7 +52,7 @@ class EntityExtraction(BaseModel):
 
 class GraphQueryResult(BaseModel):
     """Graph query execution result"""
-    triples: List[str] = Field(description="Retrieved knowledge graph triples")
+    triples: List[Dict[str, Any]] = Field(description="Retrieved knowledge graph triples")
     queries_executed: int = Field(description="Number of Cypher queries executed")
     scenario_used: str = Field(description="Query scenario that was applied")
 
@@ -250,12 +250,6 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     - CONTEXTUAL: severity, location, timing
 
     RELATIONSHIP INDICATORS:
-    For CSV Data:
-    - STRUCTURAL: "HAS_FINDING", "HAS_LOCATION" (for CSV data)
-    - PATIENT: "age", "gender", "findings", "images"
-    - SPATIAL: "location", "dimensions", "coordinates"
-    
-    For Other Documents:
     - CAUSATIVE: "causes", "leads to", "results in"
     - ASSOCIATED: "associated with", "related to", "linked to"  
     - DIAGNOSTIC: "indicates", "suggests", "shows"
@@ -369,9 +363,7 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_q
         except Exception as e:
             logger.error("adaptive_graph_query_failed", error=str(e))
             return GraphQueryResult(triples=[], queries_executed=0, scenario_used="ERROR")
-
-
-
+        
 def _analyze_neo4j_query_context(query: str, entities: List[str]) -> Dict[str, Any]:
     """
     Analyze query context like Vector DB approach - dynamic pattern recognition.
@@ -437,7 +429,6 @@ def _analyze_neo4j_query_context(query: str, entities: List[str]) -> Dict[str, A
     
     return context
 
-
 def _handle_patient_id_queries(session, entities: List[str]) -> List[str]:
     """Handle specific patient ID queries with exact matching"""
     triples = []
@@ -469,7 +460,6 @@ def _handle_patient_id_queries(session, entities: List[str]) -> List[str]:
                 break
     
     return triples
-
 
 def _execute_adaptive_query(session, context: Dict[str, Any], original_query: str, entities: List[str] = None) -> List[str]:
     """
@@ -589,7 +579,6 @@ def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
             continue
     
     return triples
-
 
 def _calculate_entity_relevance(entity: str, property_value: str) -> float:
     """Calculate relevance score like Vector DB approach"""
@@ -1141,105 +1130,6 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
         )
 
 
-                # Step 1: Validate if query is medical/healthcare related
-                validation_result = self.invoke_tool("validate_medical_relevance", {
-                    "query": query,
-                    "llm": self.llm
-                })
-                
-                # Handle non-medical queries immediately
-                if not validation_result.is_medical:
-                    state["route"] = "none"
-                    state["routing_analysis"] = "Non-medical query detected"
-                    state["final_answer"] = validation_result.quick_response
-                    
-                    logger.info(
-                        "orchestrator_non_medical_query",
-                        query_length=len(query),
-                        trace_id=state.get('trace_id')
-                    )
-                    
-                    return state
-                
-                # Step 2: For medical queries, analyze characteristics and route
-                analysis_result = self.invoke_tool("analyze_query_characteristics", {
-                    "query": query,
-                    "llm": self.llm
-                })
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                
-                # Log routing decision
-                logger.info(
-                    "query_routed",
-                    route=state["route"],
-                    confidence=state["route_confidence"],
-                    intent=analysis_result.intent,
-                    entity_count=analysis_result.entity_count,
-                    has_relationships=analysis_result.has_relationships,
-                    is_csv_query=is_csv_query,
-                    trace_id=state.get('trace_id')
-                )
-                
-                return state
-            
-            except Exception as e:
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                return state
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                # Create analysis summary
-                analysis = f"Intent: {analysis_result.intent}, Entities: {analysis_result.entity_count}, Relationships: {analysis_result.has_relationships}"
-                
-                # Update state with routing information
-                state["route"] = route
-                state["routing_analysis"] = analysis
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                
-                # Log routing decision
-                logger.info(
-                    "query_routed",
-                    route=state["route"],
-                    confidence=state["route_confidence"],
-                    intent=analysis_result.intent,
-                    entity_count=analysis_result.entity_count,
-                    has_relationships=analysis_result.has_relationships,
-                    is_csv_query=is_csv_query,
-                    trace_id=state.get('trace_id')
-                )
-                
-                return state
-            
-            except Exception as e:
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                return state
 class OrchestratorAgent(SecureAgentBase):
     """
     Simplified Function-Calling Orchestrator Agent
@@ -1279,172 +1169,44 @@ class OrchestratorAgent(SecureAgentBase):
                     )
                     
                     return state
-
-                # Step 2: Check for CSV-specific patterns (patient IDs, findings, ages)
-                query_lower = query.lower()
-                is_csv_query = any(pattern in query_lower for pattern in [
-                    "patient id", "patient", "finding", "age", "years old",
-                    "location", "bounding box", "dimension"
-                ])
-                
-                # Step 2.1: Check for demographic queries (should go to graph)
-                is_demographic_query = any(pattern in query_lower for pattern in [
-                    "female", "male", "women", "men", "gender",
-                    "young", "elderly", "old", "age", "years",
-                    "less than", "more than", "over", "under"
-                ])
-                
-                # Step 3: Analyze query characteristics for routing
-                analysis_result = self.invoke_tool("analyze_query_characteristics", {
-                    "query": query,
-                    "llm": self.llm
-                })
-                
-                # Step 4: Determine optimal route based on analysis and CSV detection
-                if is_csv_query or is_demographic_query:
-                    # Force graph route for CSV-specific queries and demographic filtering
-                    state["route"] = "graph"
-                    state["route_confidence"] = "HIGH"
-                    reason = "Query involves CSV data (patient records, findings, or medical measurements)"
-                    if is_demographic_query:
-                        reason += " and demographic filtering"
-                    state["route_reasoning"] = reason
-                else:
-                    # Use standard routing for non-CSV queries
-                    routing_result = determine_optimal_route.invoke({
-                        "analysis": analysis_result
-                    })
-                    state["route"] = routing_result.route
-                    state["route_confidence"] = routing_result.confidence
-                    state["route_reasoning"] = routing_result.reasoning
-                
-                # Create analysis summary
-                analysis = f"Intent: {analysis_result.intent}, Entities: {analysis_result.entity_count}, Relationships: {analysis_result.has_relationships}"
-                state["routing_analysis"] = analysis
-                
-                # Log routing decision
-                logger.info(
-                    "query_routed",
-                    route=state["route"],
-                    confidence=state["route_confidence"],
-                    intent=analysis_result.intent,
-                    entity_count=analysis_result.entity_count,
-                    has_relationships=analysis_result.has_relationships,
-                    is_csv_query=is_csv_query,
-                    trace_id=state.get('trace_id')
-                )
-                
-                return state
-            
-            except Exception as e:
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
-                return state
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-=======
-                # Step 1: Validate if query is medical/healthcare related
-                validation_result = self.invoke_tool("validate_medical_relevance", {
-                    "query": query,
-                    "llm": self.llm
-                })
-                
-                # Handle non-medical queries immediately
-                if not validation_result.is_medical:
-                    state["route"] = "none"
-                    state["routing_analysis"] = "Non-medical query detected"
-                    state["final_answer"] = validation_result.quick_response
-                    
-                    logger.info(
-                        "orchestrator_non_medical_query",
-                        query_length=len(query),
-                        trace_id=state.get('trace_id')
-                    )
-                    
-                    return state
                 
                 # Step 2: For medical queries, analyze characteristics and route
                 analysis_result = self.invoke_tool("analyze_query_characteristics", {
                     "query": query,
                     "llm": self.llm
                 })
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
                 
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
+                # Determine optimal route based on analysis
+                routing_result = self.invoke_tool("determine_optimal_route", {"analysis": analysis_result})
                 
-                # Log routing decision
-                logger.info(
-                    "query_routed",
-                    route=state["route"],
-                    confidence=state["route_confidence"],
-                    intent=analysis_result.intent,
-                    entity_count=analysis_result.entity_count,
-                    has_relationships=analysis_result.has_relationships,
-                    is_csv_query=is_csv_query,
-                    trace_id=state.get('trace_id')
-                )
+                # Extract routing information
+                route = routing_result.route
+                reasoning = routing_result.reasoning
                 
-                return state
-            
-            except Exception as e:
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                return state
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-=======
                 # Create analysis summary
                 analysis = f"Intent: {analysis_result.intent}, Entities: {analysis_result.entity_count}, Relationships: {analysis_result.has_relationships}"
                 
                 # Update state with routing information
                 state["route"] = route
                 state["routing_analysis"] = analysis
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
                 
-                # Log routing decision
                 logger.info(
-                    "query_routed",
-                    route=state["route"],
-                    confidence=state["route_confidence"],
-                    intent=analysis_result.intent,
-                    entity_count=analysis_result.entity_count,
-                    has_relationships=analysis_result.has_relationships,
-                    is_csv_query=is_csv_query,
+                    "orchestrator_medical_routing",
+                    route=route,
+                    reasoning=reasoning,
+                    analysis=analysis,
+                    query_length=len(query),
                     trace_id=state.get('trace_id')
                 )
                 
                 return state
-            
+                
             except Exception as e:
                 logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
                 errors = state.get("errors") or []
                 state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
                 state["route"] = "both"  # Safe fallback
                 state["routing_analysis"] = "Error during analysis"
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
-=======
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
->>>>>>> 426bee0c0beb9b962a29f1f88c8fb1a9050416c3
                 return state
 
 
@@ -1561,45 +1323,8 @@ class GraphRAGAgent(SecureAgentBase):
         self.driver = neo4j_driver
         self.llm = llm
     
-    def _handle_spatial_query(self, finding: str) -> str:
-        return """
-        MATCH (f:Finding {name: $finding})-[:HAS_LOCATION]->(b:BoundingBox)
-        WITH avg(b.x) as avg_x, avg(b.y) as avg_y, 
-             avg(b.width) as avg_width, avg(b.height) as avg_height,
-             count(b) as total_locations
-        RETURN avg_x, avg_y, avg_width, avg_height, total_locations
-        """
-
     def extract_and_query(self, state: WorkflowState) -> WorkflowState:
         """Extract entities and query knowledge graph using function calling approach"""
-        try:
-            # Test Neo4j connection
-            logger.info("testing_neo4j_connection")
-            with self.driver.session() as session:
-                result = session.run("MATCH (n) RETURN count(n) as count")
-                node_count = result.single()["count"]
-                logger.info("neo4j_connection_success", node_count=node_count)
-        except Exception as e:
-            logger.error("neo4j_connection_failed", error=str(e))
-            state["errors"] = state.get("errors", []) + [f"Neo4j connection error: {str(e)}"]
-            return state
-
-        query = state.get("query", "").lower()
-        if "location" in query or "dimension" in query or "bounding box" in query:
-            # Handle spatial queries
-            finding = next((f for f in ["Atelectasis", "Infiltration", "Effusion", "Mass"] if f.lower() in query.lower()), None)
-            if finding:
-                with self.driver.session() as session:
-                    result = session.run(self._handle_spatial_query(finding), finding=finding)
-                    data = result.single()
-                    if data:
-                        state["graph_result"] = {
-                            "spatial_data": {
-                                "avg_location": {"x": data["avg_x"], "y": data["avg_y"]},
-                                "avg_dimensions": {"width": data["avg_width"], "height": data["avg_height"]},
-                                "total_occurrences": data["total_locations"]
-                            }
-                        }
         
         with observability.measure_agent_performance("graph", cast(Dict[str, Any], state)):
             try:
@@ -1614,8 +1339,7 @@ class GraphRAGAgent(SecureAgentBase):
                 # Step 2: Execute graph queries based on extraction
                 graph_result = self.invoke_tool("execute_graph_queries", {
                     "extraction": extraction_result,
-                    "neo4j_driver": self.driver,
-                    "original_query": query
+                    "neo4j_driver": self.driver
                 })
                 
                 # Update state

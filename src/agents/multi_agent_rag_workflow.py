@@ -334,7 +334,9 @@ def main():
         # Example query
         #query ="what is .net?"
         #query = "What is NIH Chest X-ray?"
-        query ="Provide concerns about the image label accuracy in medical"
+        query ="What is SNOMED-CT Concepts?"
+        #query ="Describe the Construction of Hospital-scale Chest X-ray Database?"
+        #query ="Provide concerns about the image label accuracy in medical"
         #query ="Tell me about the medical history of patient ID 1, including all findings and their progression"
         #query ="Tell me about the medical history of patient ID 1, including all findings and their progression?"
         print(f"Query: {query}")

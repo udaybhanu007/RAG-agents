@@ -642,7 +642,7 @@ def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
 @tool
 def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=None, 
                          llm=None, collection_name: str = "documents", 
-                         limit: int = 10, score_threshold: float = 0.6) -> HybridSearchResult:
+                         limit: int = 10, score_threshold: float = 0.3) -> HybridSearchResult:
     """
     Perform hybrid search combining vector similarity and BM25 keyword search.
     
@@ -771,48 +771,24 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
 
 def _merge_search_results(vector_docs: List[Dict], bm25_docs: List[Dict], query: str) -> List[Dict]:
     """
-    Merge and deduplicate vector and BM25 results using adaptive equal weighting.
-    Adapts weights based on query characteristics for optimal performance.
+    Merge and deduplicate vector and BM25 results with simple equal weighting.
     """
     merged_docs = []
     seen_content = set()
     
-    # Analyze query to determine optimal weighting
-    query_analysis = _analyze_query_for_weighting(query)
-    vector_weight = query_analysis["vector_weight"]
-    bm25_weight = query_analysis["bm25_weight"]
+    # Simple equal weighting (0.5 each)
+    vector_weight = 0.5
+    bm25_weight = 0.5
     
-    # Helper function to create content signature
     def content_signature(content: str) -> str:
-        # Create a signature based on first 100 chars (lowercased, cleaned)
-        cleaned = re.sub(r'\W+', ' ', content.lower()).strip()
-        return cleaned[:100]
+        """Create content signature for deduplication"""
+        return re.sub(r'\W+', ' ', content.lower()).strip()[:100]
     
-    # Normalize vector scores to 0-1 range
-    def normalize_vector_score(score: float) -> float:
-        # Vector scores are already 0-1, but ensure they're properly bounded
-        return max(0.0, min(1.0, score))
-    
-    # Normalize BM25 scores to 0-1 range using rank-based approach
-    def normalize_bm25_score(rank: int, total_docs: int) -> float:
-        # Higher rank = lower score (rank 0 = best)
-        if total_docs == 0:
-            return 0.0
-        return max(0.0, 1.0 - (rank / total_docs))
-    
-    # Process vector docs first
+    # Process vector docs
     for doc in vector_docs:
         sig = content_signature(doc["content"])
         if sig not in seen_content:
-            # Normalize vector score and apply adaptive weighting
-            normalized_vector = normalize_vector_score(doc["score"])
-            keyword_bonus = _calculate_keyword_relevance(query, doc["content"])
-            
-            # Equal weighting with query adaptation
-            doc["hybrid_score"] = (
-                normalized_vector * vector_weight + 
-                keyword_bonus * bm25_weight
-            )
+            doc["hybrid_score"] = doc["score"] * vector_weight
             doc["source_primary"] = "vector"
             merged_docs.append(doc)
             seen_content.add(sig)
@@ -821,88 +797,20 @@ def _merge_search_results(vector_docs: List[Dict], bm25_docs: List[Dict], query:
     for i, doc in enumerate(bm25_docs):
         sig = content_signature(doc["content"])
         if sig not in seen_content:
-            # Normalize BM25 score and apply adaptive weighting
-            normalized_bm25 = normalize_bm25_score(i, len(bm25_docs))
-            semantic_bonus = _calculate_semantic_relevance(query, doc["content"])
-            
-            # Equal weighting with query adaptation
-            doc["hybrid_score"] = (
-                semantic_bonus * vector_weight + 
-                normalized_bm25 * bm25_weight
-            )
+            # Simple rank-based scoring
+            rank_score = max(0.0, 1.0 - (i / max(len(bm25_docs), 1)))
+            doc["hybrid_score"] = rank_score * bm25_weight
             doc["source_primary"] = "bm25"
             merged_docs.append(doc)
             seen_content.add(sig)
     
     # Sort by hybrid score
     merged_docs.sort(key=lambda x: x["hybrid_score"], reverse=True)
-    
     return merged_docs
 
 
-def _analyze_query_for_weighting(query: str) -> Dict[str, Any]:
-    """
-    Analyze query characteristics to determine optimal vector/BM25 weighting.
-    Returns adaptive weights that sum to 1.0 for true equal contribution.
-    """
-    query_lower = query.lower()
-    
-    # Count different query characteristics
-    exact_match_indicators = len([word for word in query.split() if len(word) > 6])
-    technical_terms = len([word for word in query.split() if any(char.isupper() for char in word)])
-    question_words = len([word for word in ['what', 'how', 'why', 'when', 'where', 'who'] if word in query_lower])
-    
-    # Base weights (true equal weighting)
-    vector_weight = 0.5
-    bm25_weight = 0.5
-    
-    # Adjust based on query characteristics
-    if exact_match_indicators > 2:
-        # Queries with many specific terms benefit from keyword search
-        bm25_weight += 0.1
-        vector_weight -= 0.1
-    
-    if technical_terms > 1:
-        # Technical queries often need exact term matching
-        bm25_weight += 0.1
-        vector_weight -= 0.1
-        
-    if question_words > 0:
-        # Conceptual questions benefit from semantic search
-        vector_weight += 0.1
-        bm25_weight -= 0.1
-    
-    # Ensure weights sum to 1.0
-    total = vector_weight + bm25_weight
-    vector_weight /= total
-    bm25_weight /= total
-    
-    return {
-        "vector_weight": vector_weight,
-        "bm25_weight": bm25_weight,
-        "reasoning": f"Vector: {vector_weight:.2f}, BM25: {bm25_weight:.2f}"
-    }
-
-
-def _calculate_semantic_relevance(query: str, content: str) -> float:
-    """
-    Calculate simple semantic relevance for BM25 documents.
-    Provides a semantic bonus to BM25 results for better hybrid scoring.
-    """
-    query_words = set(query.lower().split())
-    content_words = set(content.lower().split())
-    
-    # Calculate word overlap
-    overlap = len(query_words.intersection(content_words))
-    if len(query_words) == 0:
-        return 0.0
-    
-    # Simple overlap-based score
-    return min(overlap / len(query_words), 1.0)
-
-
 def _calculate_keyword_relevance(query: str, content: str) -> float:
-    """Calculate simple keyword-based relevance score"""
+    """Calculate simple keyword overlap score"""
     query_words = set(query.lower().split())
     content_words = set(content.lower().split())
     
@@ -911,86 +819,6 @@ def _calculate_keyword_relevance(query: str, content: str) -> float:
     
     overlap = len(query_words.intersection(content_words))
     return min(overlap / len(query_words), 1.0)
-
-
-# Called by: VectorRAGAgent
-@tool
-def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, collection_name: str = "documents", limit: int = 10, score_threshold: float = 0.6) -> VectorSearchResult:
-    """
-    Perform semantic search using Qdrant vector database.
-    
-    Args:
-        query: The search query
-        qdrant_client: Qdrant client instance
-        embeddings: Azure OpenAI embeddings instance
-        llm: LLM instance (optional, kept for compatibility)
-        collection_name: Name of the Qdrant collection
-        limit: Maximum number of documents to retrieve
-        score_threshold: Minimum similarity score threshold
-        
-    Returns:
-        VectorSearchResult with documents and precision score
-    """
-    # Generate query embedding
-    query_embedding = embeddings.embed_query(query)
-    
-    # Search in Qdrant
-    search_results = qdrant_client.search(
-        collection_name=collection_name,
-        query_vector=query_embedding,
-        limit=limit,
-        score_threshold=score_threshold,
-        with_payload=True,
-        with_vectors=False
-    )
-    
-    # Convert results to standard format
-    documents = []
-    for result in search_results:
-        # Extract metadata directly from payload since it's not nested
-        metadata = {
-            "file_path": result.payload.get("file_path", ""),
-            "created_date": result.payload.get("created_date", ""),
-        }
-        # Include any additional payload items that aren't chunk or the metadata fields
-        for key, value in result.payload.items():
-            if key not in ["chunk", "file_path", "created_date"]:
-                metadata[key] = value
-        
-        doc = {
-            "id": result.id,
-            "content": result.payload.get("chunk", ""),
-            "metadata": metadata,
-            "score": float(result.score),
-            "source": "vector_store"
-        }
-        documents.append(doc)
-    
-    # Calculate statistics
-    total_found = len(documents)
-    
-    # Calculate simple precision based on score distribution
-    precision_score = None
-    if documents:
-        high_score_docs = [doc for doc in documents if doc["score"] >= score_threshold]
-        precision_score = len(high_score_docs) / total_found
-        
-        # Log precision metrics (simplified)
-        logger.info(
-            "vector_search_completed",
-            query_length=len(query),
-            total_documents=total_found,
-            precision_score=precision_score,
-            collection_name=collection_name,
-            score_threshold=score_threshold
-        )
-    
-    return VectorSearchResult(
-        documents=documents,
-        total_found=total_found,
-        precision_score=precision_score
-    )
-
 
 # Called by: VectorRAGAgent
 @tool
@@ -1246,49 +1074,27 @@ class VectorRAGAgent(SecureAgentBase):
                 query = state["query"]
                 
                 # Step 1: Perform hybrid search (vector + BM25) using tool
-                if self.bm25_retriever:
-                    # Use hybrid search when BM25 is available
-                    search_result = self.invoke_tool("perform_hybrid_search", {
-                        "query": query,
-                        "qdrant_client": self.qdrant_client,
-                        "embeddings": self.embeddings,
-                        "bm25_retriever": self.bm25_retriever,
-                        "llm": self.llm,
-                        "collection_name": self.collection_name,
-                        "limit": 10,
-                        "score_threshold": 0.3
-                    })
-                    
-                    documents = search_result.documents
-                    search_strategy = search_result.search_strategy
-                    vector_count = search_result.vector_count
-                    bm25_count = search_result.bm25_count
-                    precision_score = search_result.precision_score
-                    
-                else:
-                    # Fallback to vector-only search
-                    vector_result = self.invoke_tool("perform_vector_search", {
-                        "query": query,
-                        "qdrant_client": self.qdrant_client,
-                        "embeddings": self.embeddings,
-                        "llm": self.llm,
-                        "collection_name": self.collection_name,
-                        "limit": 10,
-                        "score_threshold": 0.3
-                    })
-                    
-                    documents = vector_result.documents
-                    search_strategy = "vector_only"
-                    vector_count = len(documents)
-                    bm25_count = 0
-                    precision_score = vector_result.precision_score
+                search_result = self.invoke_tool("perform_hybrid_search", {
+                    "query": query,
+                    "qdrant_client": self.qdrant_client,
+                    "embeddings": self.embeddings,
+                    "bm25_retriever": self.bm25_retriever,
+                    "llm": self.llm,
+                    "collection_name": self.collection_name,
+                    "limit": 10                   
+                })
+                
+                documents = search_result.documents
+                search_strategy = search_result.search_strategy
+                vector_count = search_result.vector_count
+                bm25_count = search_result.bm25_count
+                precision_score = search_result.precision_score
                 
                 # Step 2: Optional additional reranking if LLM available and enough documents
                 reranking_applied = False
-                if self.llm and len(documents) > 3 and not self.bm25_retriever:
+                if self.llm and len(documents) > 3:
                     # Only do additional reranking if we haven't already done hybrid scoring                    
                     rerank_result = self.invoke_tool("rerank_documents_by_relevance", {
-
                         "query": query,
                         "documents": documents,
                         "llm": self.llm
@@ -1394,10 +1200,6 @@ def register_agent_tools():
     )
     
     # Vector RAG tools
-    tool_registry.register_tool(
-        perform_vector_search,
-        ToolMetadata("perform_vector_search", [AgentRole.VECTOR_RAG])
-    )
     tool_registry.register_tool(
         perform_hybrid_search,
         ToolMetadata("perform_hybrid_search", [AgentRole.VECTOR_RAG])

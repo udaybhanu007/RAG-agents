@@ -34,5 +34,5 @@ build/
 
 ### Venv files ###
 .venv/
-
+venv/
 extracted_images

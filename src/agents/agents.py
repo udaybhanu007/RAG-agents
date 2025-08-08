@@ -1035,9 +1035,46 @@ class OrchestratorAgent(SecureAgentBase):
                 logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
                 errors = state.get("errors") or []
                 state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
-                return state
+                # Re-raise the exception since orchestrator should always return a valid route
+                raise
+    
+    def get_workflow_routing(self, state: WorkflowState) -> str:
+        """
+        Convert orchestrator route decision to workflow routing format.
+        This contains simple mapping logic that doesn't require tool governance.
+        """
+        route = state.get("route", "both")
+        
+        # Simple mapping logic - no need for tool governance
+        if route == "vector":
+            return "vector"
+        elif route == "graph":
+            return "graph"
+        elif route == "both":
+            return "both_vector_first"  # Start with vector, then graph
+        elif route == "none":
+            return "none"  # Non-medical query - end workflow
+        else:
+            # This should never happen since orchestrator always returns valid routes
+            logger.error("invalid_route_from_orchestrator", route=route)
+            raise ValueError(f"Invalid route received from orchestrator: {route}")
+    
+    def get_post_vector_routing(self, state: WorkflowState) -> str:
+        """
+        Determine next step after vector retrieval based on orchestrator's routing decision.
+        This contains simple business logic that doesn't require tool governance.
+        """
+        route = state.get("route", "both")
+        
+        # Simple business logic - no need for tool governance
+        if route == "both":
+            return "continue_to_graph"  # Continue with graph retrieval for comprehensive search
+        elif route in ["vector", "graph", "none"]:
+            return "continue_to_validator"  # Skip graph, go directly to validation
+        else:
+            # This should never happen since orchestrator always returns valid routes
+            logger.error("invalid_route_for_post_vector", route=route)
+            raise ValueError(f"Invalid route for post-vector step: {route}")
 
 
 class VectorRAGAgent(SecureAgentBase):

@@ -182,12 +182,13 @@ class MultiAgentRAGWorkflow:
         Build the simple LangGraph workflow - Happy Path only
         
         Simple linear flow:
-        1. Orchestrator decides routing (always returns vector/graph/both)
-        2. Vector and/or Graph retrieval based on routing
+        1. Orchestrator decides routing and handles workflow routing logic
+        2. Vector and/or Graph retrieval based on orchestrator's routing decision
         3. Validation
         4. Synthesis
         
-        Note: No "none" routing case since OrchestratorAgent always returns valid routes
+        The orchestrator agent owns all routing business logic and converts
+        it to workflow-compatible format.
         """
         
         # Create state graph
@@ -286,31 +287,18 @@ class MultiAgentRAGWorkflow:
             return result
     
     def route_query(self, state: WorkflowState) -> str:
-        """Route the query based on orchestrator decision"""
-        route = state.get("route", "both")
-        
-        if route == "vector":
-            return "vector"
-        elif route == "graph":
-            return "graph"
-        elif route == "both":
-            return "both_vector_first"  # Start with vector, then graph
-        elif route == "none":
-            return "none"  # Non-medical query - end workflow
-        else:
-            # This should never happen with function calling OrchestratorAgent
-            # but provide fallback for safety
-            return "both_vector_first"
+        """
+        Delegate routing to orchestrator agent.
+        The orchestrator owns all routing business logic.
+        """
+        return self.orchestrator.get_workflow_routing(state)
     
     def check_if_graph_needed(self, state: WorkflowState) -> str:
         """
-        Simple check if we need to continue to graph after vector retrieval
+        Delegate post-vector routing to orchestrator agent.
+        The orchestrator owns all routing business logic.
         """
-        route = state.get("route", "")
-        if route == "both":
-            return "continue_to_graph"
-        else:
-            return "continue_to_validator"
+        return self.orchestrator.get_post_vector_routing(state)
     
     def run(self, query: str) -> str:
         """

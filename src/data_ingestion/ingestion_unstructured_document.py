@@ -1,7 +1,4 @@
 
-COLLECTION_NAME = "poc_medical_research_doc"
-
-
 from typing import List, Dict, Any
 from .ExtractedResponse import ExtractedResponse
 from qdrant_client import QdrantClient
@@ -15,6 +12,9 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+# Read collection name from environment with fallback
+COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION")
 
 class QdrantDBManager:
     """Manages Qdrant client and collection operations."""

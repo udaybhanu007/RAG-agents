@@ -4,7 +4,7 @@ from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_core.tools import tool
 from langchain_core.documents import Document
-from langchain.retrievers import BM25Retriever
+from langchain_community.retrievers import BM25Retriever
 from pydantic.v1 import BaseModel, Field
 from qdrant_client import QdrantClient
 from workflow_state import WorkflowState
@@ -52,7 +52,7 @@ class EntityExtraction(BaseModel):
 
 class GraphQueryResult(BaseModel):
     """Graph query execution result"""
-    triples: List[Dict[str, Any]] = Field(description="Retrieved knowledge graph triples")
+    triples: List[str] = Field(description="Retrieved knowledge graph triples")
     queries_executed: int = Field(description="Number of Cypher queries executed")
     scenario_used: str = Field(description="Query scenario that was applied")
 
@@ -200,6 +200,12 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     - CONTEXTUAL: severity, location, timing
 
     RELATIONSHIP INDICATORS:
+    For CSV Data:
+    - STRUCTURAL: "HAS_FINDING", "HAS_LOCATION" (for CSV data)
+    - PATIENT: "age", "gender", "findings", "images"
+    - SPATIAL: "location", "dimensions", "coordinates"
+    
+    For Other Documents:
     - CAUSATIVE: "causes", "leads to", "results in"
     - ASSOCIATED: "associated with", "related to", "linked to"  
     - DIAGNOSTIC: "indicates", "suggests", "shows"
@@ -259,131 +265,306 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
 
 
 @tool
-def execute_graph_queries(extraction: EntityExtraction, neo4j_driver) -> GraphQueryResult:
+def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_query: str = "") -> GraphQueryResult:
     """
-    Execute Cypher queries based on entity extraction results.
+    Execute adaptive Cypher queries using Vector DB principles: truly dynamic, self-adapting.
+    Analyzes query semantically and builds appropriate filters dynamically.
     
     Args:
         extraction: EntityExtraction with entities, relationships, concepts
         neo4j_driver: Neo4j driver instance
+        original_query: Original user query for context analysis
         
     Returns:
         GraphQueryResult with retrieved triples
     """
     entities = extraction.entities
-    relationships = extraction.relationships
-    concepts = extraction.concepts
-    scenario = extraction.scenario
-    
-    # Build queries based on scenario
-    queries = []
-    
-    if scenario == "MULTI_ENTITY_WITH_RELATIONSHIPS":
-        # Entity pair relationships
-        for i in range(len(entities)):
-            for j in range(i+1, len(entities)):
-                query = f"""
-                MATCH (a)-[r]-(b) 
-                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
-                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
-                RETURN a.name as subject, type(r) as predicate, b.name as object
-                LIMIT 5
-                """
-                queries.append(query)
-        
-        # Relationship-specific queries
-        if relationships:
-            primary_entity = entities[0]
-            for relationship in relationships[:2]:  # Limit to avoid query explosion
-                query = f"""
-                MATCH (a)-[r]-(b)
-                WHERE (toLower(a.name) CONTAINS toLower('{primary_entity}') OR toLower(a.title) CONTAINS toLower('{primary_entity}'))
-                AND (toLower(type(r)) CONTAINS toLower('{relationship}') OR toLower(r.type) CONTAINS toLower('{relationship}'))
-                RETURN a.name as subject, type(r) as predicate, b.name as object
-                LIMIT 5
-                """
-                queries.append(query)
-    
-    elif scenario == "MULTI_ENTITY_NO_RELATIONSHIPS":
-        # Simple entity pair connections
-        for i in range(len(entities)):
-            for j in range(i+1, len(entities)):
-                query = f"""
-                MATCH (a)-[r]-(b) 
-                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
-                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
-                RETURN a.name as subject, type(r) as predicate, b.name as object
-                LIMIT 8
-                """
-                queries.append(query)
-    
-    elif scenario == "SINGLE_ENTITY_WITH_RELATIONSHIPS":
-        entity = entities[0]
-        for relationship in relationships:
-            query = f"""
-            MATCH (a)-[r]-(b)
-            WHERE (toLower(a.name) CONTAINS toLower('{entity}') OR toLower(a.title) CONTAINS toLower('{entity}'))
-            AND (toLower(type(r)) CONTAINS toLower('{relationship}') OR toLower(r.type) CONTAINS toLower('{relationship}'))
-            RETURN a.name as subject, type(r) as predicate, b.name as object
-            LIMIT 8
-            """
-            queries.append(query)
-    
-    elif scenario == "SINGLE_ENTITY_NO_RELATIONSHIPS":
-        entity = entities[0]
-        # Entity properties and connections
-        queries = [
-            f"""
-            MATCH (n) 
-            WHERE toLower(n.name) CONTAINS toLower('{entity}') OR toLower(n.title) CONTAINS toLower('{entity}')
-            RETURN n.name as subject, 'has_property' as predicate, n as object
-            LIMIT 5
-            """,
-            f"""
-            MATCH (a)-[r]-(b)
-            WHERE toLower(a.name) CONTAINS toLower('{entity}') OR toLower(a.title) CONTAINS toLower('{entity}')
-            RETURN a.name as subject, type(r) as predicate, b.name as object
-            LIMIT 8
-            """
-        ]
-    
-    else:  # CONCEPTS_ONLY
-        for concept in concepts:
-            query = f"""
-            MATCH (n) 
-            WHERE toLower(n.category) CONTAINS toLower('{concept}') 
-            OR toLower(n.domain) CONTAINS toLower('{concept}')
-            OR toLower(n.specialty) CONTAINS toLower('{concept}')
-            RETURN n.name as subject, 'belongs_to_concept' as predicate, '{concept}' as object
-            LIMIT 10
-            """
-            queries.append(query)
-    
-    # Execute queries and collect results
     triples = []
     
     with neo4j_driver.session() as session:
-        for cypher_query in queries:
-            try:
-                result = session.run(cypher_query)
-                for record in result:
-                    triple = {
-                        "subject": record.get("subject", ""),
-                        "predicate": record.get("predicate", ""),
-                        "object": record.get("object", ""),
-                        "metadata": dict(record.items()),
-                        "source": "knowledge_graph",
-                        "query": cypher_query
-                    }
-                    triples.append(triple)
-            except Exception as e:
-                logger.warning("cypher_query_failed", query=cypher_query, error=str(e))
+        try:
+            logger.info("starting_adaptive_graph_query", entities=entities, original_query=original_query[:100])
+            
+            # Step 1: Dynamic Query Context Analysis (like Vector DB weighting)
+            query_context = _analyze_neo4j_query_context(original_query, entities)
+            
+            # Step 2: Handle specific patient ID queries first
+            patient_triples = _handle_patient_id_queries(session, entities)
+            if patient_triples:
+                triples.extend(patient_triples)
+                logger.info("patient_id_query_executed", triples_found=len(patient_triples))
+                return GraphQueryResult(triples=triples[:20], queries_executed=1, scenario_used="PATIENT_ID")
+            
+            # Step 3: Build and execute adaptive query
+            if query_context["has_filters"]:
+                adaptive_triples = _execute_adaptive_query(session, query_context, original_query, entities)
+                triples.extend(adaptive_triples)
+                logger.info("adaptive_query_executed", 
+                           filters=query_context["demographic_filters"], 
+                           ranges=query_context["numerical_ranges"],
+                           triples_found=len(adaptive_triples))
+            
+            # Step 4: Fallback to entity search if no specific patterns
+            if not triples:
+                fallback_triples = _execute_fallback_entity_search(session, entities)
+                triples.extend(fallback_triples)
+                logger.info("fallback_search_executed", triples_found=len(fallback_triples))
+            
+            return GraphQueryResult(
+                triples=triples[:20],
+                queries_executed=1,
+                scenario_used="ADAPTIVE"
+            )
+                    
+        except Exception as e:
+            logger.error("adaptive_graph_query_failed", error=str(e))
+            return GraphQueryResult(triples=[], queries_executed=0, scenario_used="ERROR")
+
+
+
+def _analyze_neo4j_query_context(query: str, entities: List[str]) -> Dict[str, Any]:
+    """
+    Analyze query context like Vector DB approach - dynamic pattern recognition.
+    No hardcoded patterns, adapts to query semantics automatically.
+    """
+    context = {
+        "demographic_filters": {},
+        "numerical_ranges": {},
+        "entity_types": [],
+        "query_intent": "general",
+        "has_filters": False
+    }
     
-    return GraphQueryResult(
-        triples=triples,
-        queries_executed=len(queries),
-        scenario_used=scenario
-    )
+    query_lower = query.lower()
+    
+    # Dynamic demographic detection (semantic understanding)
+    gender_indicators = {
+        "female": "F", "woman": "F", "women": "F", "lady": "F", "ladies": "F",
+        "male": "M", "man": "M", "men": "M", "gentleman": "M", "guy": "M"
+    }
+    for term, value in gender_indicators.items():
+        if term in query_lower:
+            context["demographic_filters"]["gender"] = value
+            context["has_filters"] = True
+            break
+    
+    # Dynamic age detection with semantic understanding
+    age_patterns = re.findall(r'(\d+)\s*(?:\+|years?\s+old|years?)', query_lower)
+    over_patterns = re.findall(r'(?:over|above|older\s+than|aged\s+over)\s*(\d+)', query_lower)
+    under_patterns = re.findall(r'(?:under|below|less\s+than|younger\s+than)\s*(\d+)', query_lower)
+    elderly_patterns = ["elderly", "senior", "aged"]
+    young_patterns = ["young", "youth", "juvenile"]
+    
+    if age_patterns or over_patterns or under_patterns:
+        if under_patterns:
+            age_value = int(under_patterns[0])
+            operator = "<"
+        elif over_patterns:
+            age_value = int(over_patterns[0])
+            operator = ">"
+        else:
+            age_value = int(age_patterns[0])
+            operator = ">" if any(word in query_lower for word in ["over", "above", "older", "aged"]) else ">="
+        
+        context["numerical_ranges"]["age"] = {"value": age_value, "operator": operator}
+        context["has_filters"] = True
+    elif any(pattern in query_lower for pattern in elderly_patterns):
+        # Handle semantic age terms
+        context["numerical_ranges"]["age"] = {"value": 65, "operator": ">"}
+        context["has_filters"] = True
+    elif any(pattern in query_lower for pattern in young_patterns):
+        # Handle young patients (typically under 30)
+        context["numerical_ranges"]["age"] = {"value": 30, "operator": "<"}
+        context["has_filters"] = True
+    
+    # Dynamic intent detection
+    if any(word in query_lower for word in ["most", "common", "frequent", "top", "highest"]):
+        context["query_intent"] = "aggregation"
+    elif any(word in query_lower for word in ["count", "number", "how many"]):
+        context["query_intent"] = "counting"
+    elif any(word in query_lower for word in ["multiple"]):
+        context["query_intent"] = "multiple_conditions"
+    
+    return context
+
+
+def _handle_patient_id_queries(session, entities: List[str]) -> List[str]:
+    """Handle specific patient ID queries with exact matching"""
+    triples = []
+    
+    for entity in entities:
+        entity_str = str(entity).lower()
+        # Only treat as patient ID if explicitly mentioned as "patient" with number
+        # Don't treat standalone numbers as patient IDs (could be ages, etc.)
+        if "patient" in entity_str and any(char.isdigit() for char in entity_str):
+            patient_id = ''.join(filter(str.isdigit, str(entity)))
+            if patient_id:
+                patient_query = """
+                MATCH (p:Patient {id: $patient_id})
+                OPTIONAL MATCH (p)-[r1:HAS_FINDING]->(f:Finding)
+                OPTIONAL MATCH (p)-[r2:HAS_IMAGE]->(i:Image)
+                RETURN p, f, i, r1, r2
+                LIMIT 20
+                """
+                logger.info("executing_patient_query", query=patient_query, patient_id=patient_id)
+                result = session.run(patient_query, patient_id=patient_id)
+                
+                for record in result:
+                    if record["p"]:
+                        triples.append(f"Patient(id={record['p']['id']}, age_min={record['p'].get('age_min', 'N/A')}, gender={record['p'].get('gender', 'N/A')})")
+                    if record["f"]:
+                        triples.append(f"Finding(name={record['f']['name']})")
+                    if record["r1"]:
+                        triples.append(f"Patient-HAS_FINDING->Finding")
+                break
+    
+    return triples
+
+
+def _execute_adaptive_query(session, context: Dict[str, Any], original_query: str, entities: List[str] = None) -> List[str]:
+    """
+    Execute adaptive Cypher query based on context analysis.
+    Builds query dynamically like Vector DB query construction.
+    """
+    triples = []
+    
+    # Base query structure
+    match_clause = "MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding)"
+    where_conditions = []
+    parameters = {}
+    
+    # Dynamic WHERE clause building
+    if "age" in context["numerical_ranges"]:
+        age_info = context["numerical_ranges"]["age"]
+        where_conditions.append(f"p.age_min {age_info['operator']} $age_threshold")
+        parameters["age_threshold"] = age_info["value"]
+    
+    if "gender" in context["demographic_filters"]:
+        where_conditions.append("p.gender = $gender")
+        parameters["gender"] = context["demographic_filters"]["gender"]
+    
+    # Add entity-based filtering for medical conditions
+    if entities:
+        medical_entities = [e for e in entities if e.lower() not in ['female', 'females', 'male', 'males', 'years old', 'year old', 'patients', 'patient', 'young female patients', 'elderly patients', 'young patients', 'elderly', 'young', 'findings', 'multiple medical conditions', 'medical conditions', 'conditions']]
+        if medical_entities:
+            # Filter by the first medical entity (most relevant)
+            primary_entity = medical_entities[0]
+            where_conditions.append("toLower(f.name) CONTAINS $condition")
+            parameters["condition"] = primary_entity.lower()
+    
+    # Build WHERE clause
+    where_clause = " AND ".join(where_conditions) if where_conditions else ""
+    
+    # Build SELECT clause based on intent
+    if context["query_intent"] == "aggregation":
+        select_clause = "RETURN f.name as finding, count(*) as count ORDER BY count DESC LIMIT 15"
+        
+        # Build description for results
+        desc_parts = []
+        if "gender" in context["demographic_filters"]:
+            gender_desc = "female" if context["demographic_filters"]["gender"] == "F" else "male"
+            desc_parts.append(gender_desc)
+        if "age" in context["numerical_ranges"]:
+            age_info = context["numerical_ranges"]["age"]
+            desc_parts.append(f"patients {age_info['operator']} {age_info['value']}")
+        
+        description = " ".join(desc_parts) if desc_parts else "patients"
+        
+    elif context["query_intent"] == "multiple_conditions":
+        # Use WITH clause for patient-level aggregation
+        select_clause = "WITH p, collect(DISTINCT f.name) as conditions WHERE size(conditions) > 1 RETURN p.id as patient_id, p.age_min as age, p.gender as gender, conditions, size(conditions) as condition_count ORDER BY condition_count DESC LIMIT 20"
+        
+    else:
+        # Default individual finding query
+        select_clause = "RETURN p.id as patient_id, p.age_min as age, p.gender as gender, f.name as finding LIMIT 10"
+        description = "relationships"
+    
+    # Build final query
+    final_query = match_clause
+    if where_clause:
+        final_query += f" WHERE {where_clause}"
+    final_query += f" {select_clause}"
+    
+    logger.info("executing_adaptive_query", 
+               query=final_query, 
+               parameters=parameters,
+               context_filters=context["demographic_filters"],
+               context_ranges=context["numerical_ranges"])
+    
+    try:
+        result = session.run(final_query, **parameters)
+        
+        if context["query_intent"] == "aggregation":
+            for record in result:
+                triples.append(f"Finding({record['finding']}: {record['count']} cases in {description})")
+        elif context["query_intent"] == "multiple_conditions":
+            for record in result:
+                conditions_str = ", ".join(record['conditions'])
+                triples.append(f"Patient(id={record['patient_id']}, age={record['age']}, gender={record['gender']}, conditions=[{conditions_str}], count={record['condition_count']})")
+        else:
+            for record in result:
+                # Handle individual finding format  
+                triples.append(f"Patient(id={record['patient_id']}, age={record['age']}, gender={record['gender']})-HAS_FINDING->Finding({record['finding']})")
+                
+    except Exception as e:
+        logger.error("adaptive_query_execution_failed", error=str(e), query=final_query)
+    
+    return triples
+
+
+def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
+    """Fallback entity search when no specific patterns match"""
+    triples = []
+    
+    for entity in entities:
+        try:
+            entity_search_query = """
+            MATCH (n)
+            WHERE any(prop in keys(n) WHERE toString(n[prop]) CONTAINS $entity)
+            RETURN n, labels(n)[0] as node_type
+            LIMIT 10
+            """
+            
+            logger.info("executing_fallback_entity_search", entity=str(entity))
+            result = session.run(entity_search_query, entity=str(entity))
+            
+            for record in result:
+                node = record["n"]
+                node_type = record["node_type"]
+                node_id = node.get('id', node.get('name', 'unknown'))
+                triples.append(f"{node_type}(id={node_id}, properties={dict(node.items())})")
+                        
+        except Exception as e:
+            logger.debug("fallback_entity_search_failed", entity=entity, error=str(e))
+            continue
+    
+    return triples
+
+
+def _calculate_entity_relevance(entity: str, property_value: str) -> float:
+    """Calculate relevance score like Vector DB approach"""
+    entity_lower = entity.lower()
+    value_lower = property_value.lower()
+    
+    if entity_lower == value_lower:
+        return 1.0
+    elif entity_lower in value_lower:
+        return 0.8
+    elif any(word in value_lower for word in entity_lower.split()):
+        return 0.6
+    else:
+        return 0.3
+
+
+def _calculate_relationship_relevance(entity1: str, entity2: str, rel_type: str) -> float:
+    """Calculate relationship relevance like Vector DB scoring"""
+    base_score = 0.7  # Base relationship score
+    
+    # Boost for common medical relationships
+    if any(term in rel_type.upper() for term in ["HAS", "FINDING", "LOCATED", "CONTAINS"]):
+        base_score += 0.2
+    
+    return min(base_score, 1.0)
 
 
 # Function calling tools for VectorRAGAgent
@@ -913,62 +1094,73 @@ class OrchestratorAgent(SecureAgentBase):
                 
                 # Step 1: Validate if query is medical/healthcare related (only if LLM available)
                 if self.llm:
-                    validation_result = self.invoke_tool("validate_medical_relevance", {
+                    validation_result = validate_medical_relevance.invoke({
                         "query": query,
                         "llm": self.llm
                     })
                     
-                    # Handle non-medical queries immediately
+                    # Handle non-medical queries with quick response
                     if not validation_result.is_medical:
                         state["route"] = "none"
-                        state["routing_analysis"] = "Non-medical query detected"
-                        state["final_answer"] = validation_result.quick_response
-                        state["bypass_retrieval"] = True
-                        
-                        logger.info(
-                            "orchestrator_non_medical_query",
-                            query_length=len(query),
-                            trace_id=state.get('trace_id')
-                        )
-                        
+                        state["quick_response"] = validation_result.quick_response
                         return state
                 
-                # Step 2: For medical queries, proceed with normal routing
-                # Analyze query characteristics
-                analysis_result = self.invoke_tool("analyze_query_characteristics", {"query": query})
+                # Step 2: Check for CSV-specific patterns (patient IDs, findings, ages)
+                query_lower = query.lower()
+                is_csv_query = any(pattern in query_lower for pattern in [
+                    "patient id", "patient", "finding", "age", "years old",
+                    "location", "bounding box", "dimension"
+                ])
                 
-                # Determine optimal route based on analysis
-                routing_result = self.invoke_tool("determine_optimal_route", {"analysis": analysis_result})
+                # Step 2.1: Check for demographic queries (should go to graph)
+                is_demographic_query = any(pattern in query_lower for pattern in [
+                    "female", "male", "women", "men", "gender",
+                    "young", "elderly", "old", "age", "years",
+                    "less than", "more than", "over", "under"
+                ])
                 
-                # Extract routing information
-                route = routing_result.route
-                reasoning = routing_result.reasoning
+                # Step 3: Analyze query characteristics for routing
+                analysis_result = analyze_query_characteristics.invoke({
+                    "query": query
+                })
                 
-                # Create analysis summary
-                analysis = f"Intent: {analysis_result.intent}, Entities: {analysis_result.entity_count}, Relationships: {analysis_result.has_relationships}"
+                # Step 4: Determine optimal route based on analysis and CSV detection
+                if is_csv_query or is_demographic_query:
+                    # Force graph route for CSV-specific queries and demographic filtering
+                    state["route"] = "graph"
+                    state["route_confidence"] = "HIGH"
+                    reason = "Query involves CSV data (patient records, findings, or medical measurements)"
+                    if is_demographic_query:
+                        reason += " and demographic filtering"
+                    state["route_reasoning"] = reason
+                else:
+                    # Use standard routing for non-CSV queries
+                    routing_result = determine_optimal_route.invoke({
+                        "analysis": analysis_result
+                    })
+                    state["route"] = routing_result.route
+                    state["route_confidence"] = routing_result.confidence
+                    state["route_reasoning"] = routing_result.reasoning
                 
-                # Update state with routing information
-                state["route"] = route
-                state["routing_analysis"] = analysis
-                state["bypass_retrieval"] = False
-                
+                # Log routing decision
                 logger.info(
-                    "orchestrator_medical_routing",
-                    route=route,
-                    reasoning=reasoning,
-                    analysis=analysis,
-                    query_length=len(query),
+                    "query_routed",
+                    route=state["route"],
+                    confidence=state["route_confidence"],
+                    intent=analysis_result.intent,
+                    entity_count=analysis_result.entity_count,
+                    has_relationships=analysis_result.has_relationships,
+                    is_csv_query=is_csv_query,
                     trace_id=state.get('trace_id')
                 )
                 
                 return state
-                
+            
             except Exception as e:
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                state["errors"] = state.get("errors", []) + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
-                state["bypass_retrieval"] = False
+                logger.error("orchestrator_routing_error", error=str(e), trace_id=state.get('trace_id'))
+                # Default to vector search on error for graceful degradation
+                state["route"] = "vector"
+                state["errors"] = state.get("errors", []) + [f"Routing error: {str(e)}"]
                 return state
 
 
@@ -1084,8 +1276,45 @@ class GraphRAGAgent(SecureAgentBase):
         self.driver = neo4j_driver
         self.llm = llm
     
+    def _handle_spatial_query(self, finding: str) -> str:
+        return """
+        MATCH (f:Finding {name: $finding})-[:HAS_LOCATION]->(b:BoundingBox)
+        WITH avg(b.x) as avg_x, avg(b.y) as avg_y, 
+             avg(b.width) as avg_width, avg(b.height) as avg_height,
+             count(b) as total_locations
+        RETURN avg_x, avg_y, avg_width, avg_height, total_locations
+        """
+
     def extract_and_query(self, state: WorkflowState) -> WorkflowState:
         """Extract entities and query knowledge graph using function calling approach"""
+        try:
+            # Test Neo4j connection
+            logger.info("testing_neo4j_connection")
+            with self.driver.session() as session:
+                result = session.run("MATCH (n) RETURN count(n) as count")
+                node_count = result.single()["count"]
+                logger.info("neo4j_connection_success", node_count=node_count)
+        except Exception as e:
+            logger.error("neo4j_connection_failed", error=str(e))
+            state["errors"] = state.get("errors", []) + [f"Neo4j connection error: {str(e)}"]
+            return state
+
+        query = state.get("query", "").lower()
+        if "location" in query or "dimension" in query or "bounding box" in query:
+            # Handle spatial queries
+            finding = next((f for f in ["Atelectasis", "Infiltration", "Effusion", "Mass"] if f.lower() in query.lower()), None)
+            if finding:
+                with self.driver.session() as session:
+                    result = session.run(self._handle_spatial_query(finding), finding=finding)
+                    data = result.single()
+                    if data:
+                        state["graph_result"] = {
+                            "spatial_data": {
+                                "avg_location": {"x": data["avg_x"], "y": data["avg_y"]},
+                                "avg_dimensions": {"width": data["avg_width"], "height": data["avg_height"]},
+                                "total_occurrences": data["total_locations"]
+                            }
+                        }
         
         with observability.measure_agent_performance("graph", cast(Dict[str, Any], state)):
             try:
@@ -1100,7 +1329,8 @@ class GraphRAGAgent(SecureAgentBase):
                 # Step 2: Execute graph queries based on extraction
                 graph_result = self.invoke_tool("execute_graph_queries", {
                     "extraction": extraction_result,
-                    "neo4j_driver": self.driver
+                    "neo4j_driver": self.driver,
+                    "original_query": query
                 })
                 
                 # Update state

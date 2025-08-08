@@ -34,7 +34,7 @@ class MultiAgentRAGWorkflow:
     Simple Multi-Agent RAG Workflow - Happy Path Implementation
     
     This implements the clean happy path flow:
-    - Orchestrator Agent (routing)
+    - Orchestrator Agent (routing - owns ALL routing business logic)
     - Vector-RAG Agent (Qdrant search with optional BM25 hybrid)
     - Graph-RAG Agent (Neo4j queries)
     - Validator Agent (consistency checking)
@@ -45,7 +45,9 @@ class MultiAgentRAGWorkflow:
     - eager_bm25_init=True: Initialize BM25 at startup (default)
     - eager_bm25_init=False: Disable BM25, use vector-only search
     
-    Focus: Clean, simple implementation without retry complexity
+    Focus: Clean, simple implementation without retry complexity.
+    The workflow contains NO business logic - it's a pure orchestration layer.
+    All routing decisions are handled by the OrchestratorAgent.
     """
     
     def __init__(self, eager_bm25_init: bool = True):
@@ -182,12 +184,13 @@ class MultiAgentRAGWorkflow:
         Build the simple LangGraph workflow - Happy Path only
         
         Simple linear flow:
-        1. Orchestrator decides routing (always returns vector/graph/both)
-        2. Vector and/or Graph retrieval based on routing
+        1. Orchestrator decides routing (all routing logic is in OrchestratorAgent)
+        2. Vector and/or Graph retrieval based on orchestrator's routing decision
         3. Validation
         4. Synthesis
         
-        Note: No "none" routing case since OrchestratorAgent always returns valid routes
+        The workflow contains NO business logic - it only defines the flow structure.
+        All routing decisions are delegated directly to the orchestrator agent.
         """
         
         # Create state graph
@@ -203,10 +206,10 @@ class MultiAgentRAGWorkflow:
         # Set entry point
         workflow.set_entry_point("orchestrator")
         
-        # Simple routing from orchestrator
+        # Simple routing from orchestrator - delegate directly to orchestrator
         workflow.add_conditional_edges(
             "orchestrator",
-            self.route_query,
+            lambda state: self.orchestrator.get_workflow_routing(state),
             {
                 "vector": "vector_rag",
                 "graph": "graph_rag", 
@@ -215,10 +218,10 @@ class MultiAgentRAGWorkflow:
             }
         )
         
-        # For "both" routing, handle vector -> graph flow
+        # For "both" routing, handle vector -> graph flow - delegate directly to orchestrator
         workflow.add_conditional_edges(
             "vector_rag",
-            self.check_if_graph_needed,
+            lambda state: self.orchestrator.get_post_vector_routing(state),
             {
                 "continue_to_graph": "graph_rag",
                 "continue_to_validator": "validator"
@@ -284,33 +287,6 @@ class MultiAgentRAGWorkflow:
         with observability.measure_agent_performance("ans", cast(Dict[str, Any], state)):
             result = self.synthesizer.synthesize_answer(state)
             return result
-    
-    def route_query(self, state: WorkflowState) -> str:
-        """Route the query based on orchestrator decision"""
-        route = state.get("route", "both")
-        
-        if route == "vector":
-            return "vector"
-        elif route == "graph":
-            return "graph"
-        elif route == "both":
-            return "both_vector_first"  # Start with vector, then graph
-        elif route == "none":
-            return "none"  # Non-medical query - end workflow
-        else:
-            # This should never happen with function calling OrchestratorAgent
-            # but provide fallback for safety
-            return "both_vector_first"
-    
-    def check_if_graph_needed(self, state: WorkflowState) -> str:
-        """
-        Simple check if we need to continue to graph after vector retrieval
-        """
-        route = state.get("route", "")
-        if route == "both":
-            return "continue_to_graph"
-        else:
-            return "continue_to_validator"
     
     def run(self, query: str) -> str:
         """

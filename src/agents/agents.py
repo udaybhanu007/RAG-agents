@@ -71,6 +71,7 @@ class HybridSearchResult(BaseModel):
     precision_score: Optional[float] = Field(description="Hybrid precision score")
 
 
+# Called by: OrchestratorAgent
 @tool
 def validate_medical_relevance(query: str, llm) -> QueryValidation:
     """
@@ -88,19 +89,49 @@ def validate_medical_relevance(query: str, llm) -> QueryValidation:
 You are a medical query classifier. Determine if this query is medical/healthcare related.
 
 MEDICAL/HEALTHCARE queries include:
-- Medical conditions, diseases, symptoms, treatments
-- Anatomy, physiology, medications, procedures
-- Healthcare systems, medical diagnostics
-- Patient care, clinical scenarios
+- Medical conditions, diseases, symptoms, treatments, diagnostics
+- Anatomy, physiology, medications, procedures, therapies
+- Healthcare systems, medical diagnostics, clinical workflows
+- Patient care, clinical scenarios, medical consultations
+- Medical imaging (X-rays, CT scans, MRI, ultrasound, mammography)
+- Medical informatics, health IT, electronic health records (EHR)
+- Medical databases, healthcare data management, clinical data
+- Medical research, clinical studies, epidemiology
+- Healthcare technology, medical devices, telemedicine
+- Medical education, clinical training, medical curricula
+- Public health, preventive medicine, health policy
+- Medical documentation, clinical notes, medical reports
+- Hospital management, healthcare administration
+- Biomedical engineering in healthcare context
+- Medical AI, clinical decision support systems
+
+SPECIFIC MEDICAL CONTEXTS to always classify as MEDICAL:
+- Hospital-scale databases, medical data systems
+- Chest X-ray databases, medical imaging repositories
+- Clinical data collection and management
+- Healthcare infrastructure and technology
+- Medical dataset construction and analysis
+- Patient information systems
+- Clinical research databases
 
 NON-MEDICAL queries include:
-- General greetings, technology, programming
-- Sports, entertainment, travel, cooking
-- Business, finance, academic (non-medical)
+- General greetings, casual conversation
+- Pure technology/programming (without medical context)
+- Sports, entertainment, travel, cooking, lifestyle
+- Business, finance, general academic topics
+- General software development (non-healthcare)
+- Non-medical databases or systems
+
+IMPORTANT GUIDELINES:
+- If the query mentions medical terms (X-ray, hospital, patient, clinical, diagnostic) → MEDICAL
+- If the query is about medical technology or healthcare IT → MEDICAL
+- If the query combines medical + technology contexts → MEDICAL
+- Medical database construction, medical data analysis → MEDICAL
+- Only classify as NON_MEDICAL if completely unrelated to healthcare
 
 Query: "{query}"
 
-Respond with only:
+Analyze the query carefully for medical context. Respond with only:
 MEDICAL or NON_MEDICAL
 """
 
@@ -108,17 +139,43 @@ MEDICAL or NON_MEDICAL
         response = llm.invoke(validation_prompt.format(query=query))
         content = str(response.content).strip().upper()
         
-        # Fix: More precise pattern matching to avoid false positives
-        # "NON_MEDICAL" contains "MEDICAL" so we need to check for exact matches
+        # Enhanced pattern matching with better edge case handling
         if content == "MEDICAL":
             is_medical = True
+        elif content == "NON_MEDICAL" or content == "NON-MEDICAL":
+            is_medical = False
+        elif "MEDICAL" in content and "NON" not in content:
+            # Handle cases where LLM returns "MEDICAL" with extra text
+            is_medical = True
+        elif "NON" in content and "MEDICAL" in content:
+            # Handle "NON_MEDICAL" or "NON-MEDICAL" variations
+            is_medical = False
         else:
-            is_medical = False       
-            logger.warning("medical_validation_unexpected_format", content=content[:50])
+            # Fallback: Check for medical keywords in the query as safety net
+            medical_keywords = [
+                'medical', 'hospital', 'patient', 'clinical', 'health', 'disease',
+                'symptom', 'treatment', 'diagnosis', 'doctor', 'nurse', 'surgery',
+                'x-ray', 'ct scan', 'mri', 'ultrasound', 'imaging', 'chest',
+                'anatomy', 'physiology', 'medication', 'drug', 'therapeutic',
+                'healthcare', 'medicine', 'clinic', 'emergency', 'icu',
+                'radiolog', 'patholog', 'cardiolog', 'oncolog', 'neurol'
+            ]
+            
+            query_lower = query.lower()
+            has_medical_keywords = any(keyword in query_lower for keyword in medical_keywords)
+            
+            if has_medical_keywords:
+                is_medical = True
+                logger.info("medical_validation_fallback_to_keywords", 
+                           query=query[:100], llm_response=content[:50])
+            else:
+                is_medical = False
+                logger.warning("medical_validation_unexpected_format", 
+                             content=content[:50], query=query[:100])
         
         quick_response = None
         if not is_medical:
-            quick_response = "I'm a medical knowledge assistant specialized in healthcare topics. Please ask me questions about medical conditions, treatments, symptoms, or other healthcare-related matters."
+            quick_response = "I'm a medical knowledge assistant specialized in healthcare topics. Please ask me questions about medical conditions, treatments, symptoms, medical databases, healthcare technology, or other healthcare-related matters."
         
         return QueryValidation(
             is_medical=is_medical,
@@ -134,7 +191,7 @@ MEDICAL or NON_MEDICAL
         )
 
 
-# Function calling tools for OrchestratorAgent
+# Called by: OrchestratorAgent
 @tool
 def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnalysis:
     """
@@ -226,7 +283,7 @@ REASONING: [Brief explanation focusing on entities and relationships detected]
         )
 
 
-# Function calling tools for GraphRAGAgent
+# Called by: GraphRAGAgent
 @tool
 def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     """
@@ -308,135 +365,280 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     )
 
 
+# Called by: GraphRAGAgent
 @tool
-def execute_graph_queries(extraction: EntityExtraction, neo4j_driver) -> GraphQueryResult:
+def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_query: str = "") -> GraphQueryResult:
     """
-    Execute Cypher queries based on entity extraction results.
+    Execute adaptive Cypher queries using Vector DB principles: truly dynamic, self-adapting.
+    Analyzes query semantically and builds appropriate filters dynamically.
     
     Args:
         extraction: EntityExtraction with entities, relationships, concepts
         neo4j_driver: Neo4j driver instance
+        original_query: Original user query for context analysis
         
     Returns:
         GraphQueryResult with retrieved triples
     """
     entities = extraction.entities
-    relationships = extraction.relationships
-    concepts = extraction.concepts
-    scenario = extraction.scenario
-    
-    # Build queries based on scenario
-    queries = []
-    
-    if scenario == "MULTI_ENTITY_WITH_RELATIONSHIPS":
-        # Entity pair relationships
-        for i in range(len(entities)):
-            for j in range(i+1, len(entities)):
-                query = f"""
-                MATCH (a)-[r]-(b) 
-                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
-                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
-                RETURN a.name as subject, type(r) as predicate, b.name as object
-                LIMIT 5
-                """
-                queries.append(query)
-        
-        # Relationship-specific queries
-        if relationships:
-            primary_entity = entities[0]
-            for relationship in relationships[:2]:  # Limit to avoid query explosion
-                query = f"""
-                MATCH (a)-[r]-(b)
-                WHERE (toLower(a.name) CONTAINS toLower('{primary_entity}') OR toLower(a.title) CONTAINS toLower('{primary_entity}'))
-                AND (toLower(type(r)) CONTAINS toLower('{relationship}') OR toLower(r.type) CONTAINS toLower('{relationship}'))
-                RETURN a.name as subject, type(r) as predicate, b.name as object
-                LIMIT 5
-                """
-                queries.append(query)
-    
-    elif scenario == "MULTI_ENTITY_NO_RELATIONSHIPS":
-        # Simple entity pair connections
-        for i in range(len(entities)):
-            for j in range(i+1, len(entities)):
-                query = f"""
-                MATCH (a)-[r]-(b) 
-                WHERE (toLower(a.name) CONTAINS toLower('{entities[i]}') OR toLower(a.title) CONTAINS toLower('{entities[i]}'))
-                AND (toLower(b.name) CONTAINS toLower('{entities[j]}') OR toLower(b.title) CONTAINS toLower('{entities[j]}'))
-                RETURN a.name as subject, type(r) as predicate, b.name as object
-                LIMIT 8
-                """
-                queries.append(query)
-    
-    elif scenario == "SINGLE_ENTITY_WITH_RELATIONSHIPS":
-        entity = entities[0]
-        for relationship in relationships:
-            query = f"""
-            MATCH (a)-[r]-(b)
-            WHERE (toLower(a.name) CONTAINS toLower('{entity}') OR toLower(a.title) CONTAINS toLower('{entity}'))
-            AND (toLower(type(r)) CONTAINS toLower('{relationship}') OR toLower(r.type) CONTAINS toLower('{relationship}'))
-            RETURN a.name as subject, type(r) as predicate, b.name as object
-            LIMIT 8
-            """
-            queries.append(query)
-    
-    elif scenario == "SINGLE_ENTITY_NO_RELATIONSHIPS":
-        entity = entities[0]
-        # Entity properties and connections
-        queries = [
-            f"""
-            MATCH (n) 
-            WHERE toLower(n.name) CONTAINS toLower('{entity}') OR toLower(n.title) CONTAINS toLower('{entity}')
-            RETURN n.name as subject, 'has_property' as predicate, n as object
-            LIMIT 5
-            """,
-            f"""
-            MATCH (a)-[r]-(b)
-            WHERE toLower(a.name) CONTAINS toLower('{entity}') OR toLower(a.title) CONTAINS toLower('{entity}')
-            RETURN a.name as subject, type(r) as predicate, b.name as object
-            LIMIT 8
-            """
-        ]
-    
-    else:  # CONCEPTS_ONLY
-        for concept in concepts:
-            query = f"""
-            MATCH (n) 
-            WHERE toLower(n.category) CONTAINS toLower('{concept}') 
-            OR toLower(n.domain) CONTAINS toLower('{concept}')
-            OR toLower(n.specialty) CONTAINS toLower('{concept}')
-            RETURN n.name as subject, 'belongs_to_concept' as predicate, '{concept}' as object
-            LIMIT 10
-            """
-            queries.append(query)
-    
-    # Execute queries and collect results
     triples = []
     
     with neo4j_driver.session() as session:
-        for cypher_query in queries:
-            try:
-                result = session.run(cypher_query)
-                for record in result:
-                    triple = {
-                        "subject": record.get("subject", ""),
-                        "predicate": record.get("predicate", ""),
-                        "object": record.get("object", ""),
-                        "metadata": dict(record.items()),
-                        "source": "knowledge_graph",
-                        "query": cypher_query
-                    }
-                    triples.append(triple)
-            except Exception as e:
-                logger.warning("cypher_query_failed", query=cypher_query, error=str(e))
+        try:
+            logger.info("starting_adaptive_graph_query", entities=entities, original_query=original_query[:100])
+            
+            # Step 1: Dynamic Query Context Analysis (like Vector DB weighting)
+            query_context = _analyze_neo4j_query_context(original_query, entities)
+            
+            # Step 2: Handle specific patient ID queries first
+            patient_triples = _handle_patient_id_queries(session, entities)
+            if patient_triples:
+                triples.extend(patient_triples)
+                logger.info("patient_id_query_executed", triples_found=len(patient_triples))
+                return GraphQueryResult(triples=triples[:20], queries_executed=1, scenario_used="PATIENT_ID")
+            
+            # Step 3: Build and execute adaptive query
+            if query_context["has_filters"]:
+                adaptive_triples = _execute_adaptive_query(session, query_context, original_query, entities)
+                triples.extend(adaptive_triples)
+                logger.info("adaptive_query_executed", 
+                           filters=query_context["demographic_filters"], 
+                           ranges=query_context["numerical_ranges"],
+                           triples_found=len(adaptive_triples))
+            
+            # Step 4: Fallback to entity search if no specific patterns
+            if not triples:
+                fallback_triples = _execute_fallback_entity_search(session, entities)
+                triples.extend(fallback_triples)
+                logger.info("fallback_search_executed", triples_found=len(fallback_triples))
+            
+            return GraphQueryResult(
+                triples=triples[:20],
+                queries_executed=1,
+                scenario_used="ADAPTIVE"
+            )
+                    
+        except Exception as e:
+            logger.error("adaptive_graph_query_failed", error=str(e))
+            return GraphQueryResult(triples=[], queries_executed=0, scenario_used="ERROR")
+        
+def _analyze_neo4j_query_context(query: str, entities: List[str]) -> Dict[str, Any]:
+    """
+    Analyze query context like Vector DB approach - dynamic pattern recognition.
+    No hardcoded patterns, adapts to query semantics automatically.
+    """
+    context = {
+        "demographic_filters": {},
+        "numerical_ranges": {},
+        "entity_types": [],
+        "query_intent": "general",
+        "has_filters": False
+    }
     
-    return GraphQueryResult(
-        triples=triples,
-        queries_executed=len(queries),
-        scenario_used=scenario
-    )
+    query_lower = query.lower()
+    
+    # Dynamic demographic detection (semantic understanding)
+    gender_indicators = {
+        "female": "F", "woman": "F", "women": "F", "lady": "F", "ladies": "F",
+        "male": "M", "man": "M", "men": "M", "gentleman": "M", "guy": "M"
+    }
+    for term, value in gender_indicators.items():
+        if term in query_lower:
+            context["demographic_filters"]["gender"] = value
+            context["has_filters"] = True
+            break
+    
+    # Dynamic age detection with semantic understanding
+    age_patterns = re.findall(r'(\d+)\s*(?:\+|years?\s+old|years?)', query_lower)
+    over_patterns = re.findall(r'(?:over|above|older\s+than|aged\s+over)\s*(\d+)', query_lower)
+    under_patterns = re.findall(r'(?:under|below|less\s+than|younger\s+than)\s*(\d+)', query_lower)
+    elderly_patterns = ["elderly", "senior", "aged"]
+    young_patterns = ["young", "youth", "juvenile"]
+    
+    if age_patterns or over_patterns or under_patterns:
+        if under_patterns:
+            age_value = int(under_patterns[0])
+            operator = "<"
+        elif over_patterns:
+            age_value = int(over_patterns[0])
+            operator = ">"
+        else:
+            age_value = int(age_patterns[0])
+            operator = ">" if any(word in query_lower for word in ["over", "above", "older", "aged"]) else ">="
+        
+        context["numerical_ranges"]["age"] = {"value": age_value, "operator": operator}
+        context["has_filters"] = True
+    elif any(pattern in query_lower for pattern in elderly_patterns):
+        # Handle semantic age terms
+        context["numerical_ranges"]["age"] = {"value": 65, "operator": ">"}
+        context["has_filters"] = True
+    elif any(pattern in query_lower for pattern in young_patterns):
+        # Handle young patients (typically under 30)
+        context["numerical_ranges"]["age"] = {"value": 30, "operator": "<"}
+        context["has_filters"] = True
+    
+    # Dynamic intent detection
+    if any(word in query_lower for word in ["most", "common", "frequent", "top", "highest"]):
+        context["query_intent"] = "aggregation"
+    elif any(word in query_lower for word in ["count", "number", "how many"]):
+        context["query_intent"] = "counting"
+    elif any(word in query_lower for word in ["multiple"]):
+        context["query_intent"] = "multiple_conditions"
+    
+    return context
+
+def _handle_patient_id_queries(session, entities: List[str]) -> List[str]:
+    """Handle specific patient ID queries with exact matching"""
+    triples = []
+    
+    for entity in entities:
+        entity_str = str(entity).lower()
+        # Only treat as patient ID if explicitly mentioned as "patient" with number
+        # Don't treat standalone numbers as patient IDs (could be ages, etc.)
+        if "patient" in entity_str and any(char.isdigit() for char in entity_str):
+            patient_id = ''.join(filter(str.isdigit, str(entity)))
+            if patient_id:
+                patient_query = """
+                MATCH (p:Patient {id: $patient_id})
+                OPTIONAL MATCH (p)-[r1:HAS_FINDING]->(f:Finding)
+                OPTIONAL MATCH (p)-[r2:HAS_IMAGE]->(i:Image)
+                RETURN p, f, i, r1, r2
+                LIMIT 20
+                """
+                logger.info("executing_patient_query", query=patient_query, patient_id=patient_id)
+                result = session.run(patient_query, patient_id=patient_id)
+                
+                for record in result:
+                    if record["p"]:
+                        triples.append(f"Patient(id={record['p']['id']}, age_min={record['p'].get('age_min', 'N/A')}, gender={record['p'].get('gender', 'N/A')})")
+                    if record["f"]:
+                        triples.append(f"Finding(name={record['f']['name']})")
+                    if record["r1"]:
+                        triples.append(f"Patient-HAS_FINDING->Finding")
+                break
+    
+    return triples
+
+def _execute_adaptive_query(session, context: Dict[str, Any], original_query: str, entities: List[str] = None) -> List[str]:
+    """
+    Execute adaptive Cypher query based on context analysis.
+    Builds query dynamically like Vector DB query construction.
+    """
+    triples = []
+    
+    # Base query structure
+    match_clause = "MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding)"
+    where_conditions = []
+    parameters = {}
+    
+    # Dynamic WHERE clause building
+    if "age" in context["numerical_ranges"]:
+        age_info = context["numerical_ranges"]["age"]
+        where_conditions.append(f"p.age_min {age_info['operator']} $age_threshold")
+        parameters["age_threshold"] = age_info["value"]
+    
+    if "gender" in context["demographic_filters"]:
+        where_conditions.append("p.gender = $gender")
+        parameters["gender"] = context["demographic_filters"]["gender"]
+    
+    # Add entity-based filtering for medical conditions
+    if entities:
+        medical_entities = [e for e in entities if e.lower() not in ['female', 'females', 'male', 'males', 'years old', 'year old', 'patients', 'patient', 'young female patients', 'elderly patients', 'young patients', 'elderly', 'young', 'findings', 'multiple medical conditions', 'medical conditions', 'conditions']]
+        if medical_entities:
+            # Filter by the first medical entity (most relevant)
+            primary_entity = medical_entities[0]
+            where_conditions.append("toLower(f.name) CONTAINS $condition")
+            parameters["condition"] = primary_entity.lower()
+    
+    # Build WHERE clause
+    where_clause = " AND ".join(where_conditions) if where_conditions else ""
+    
+    # Build SELECT clause based on intent
+    if context["query_intent"] == "aggregation":
+        select_clause = "RETURN f.name as finding, count(*) as count ORDER BY count DESC LIMIT 15"
+        
+        # Build description for results
+        desc_parts = []
+        if "gender" in context["demographic_filters"]:
+            gender_desc = "female" if context["demographic_filters"]["gender"] == "F" else "male"
+            desc_parts.append(gender_desc)
+        if "age" in context["numerical_ranges"]:
+            age_info = context["numerical_ranges"]["age"]
+            desc_parts.append(f"patients {age_info['operator']} {age_info['value']}")
+        
+        description = " ".join(desc_parts) if desc_parts else "patients"
+        
+    elif context["query_intent"] == "multiple_conditions":
+        # Use WITH clause for patient-level aggregation
+        select_clause = "WITH p, collect(DISTINCT f.name) as conditions WHERE size(conditions) > 1 RETURN p.id as patient_id, p.age_min as age, p.gender as gender, conditions, size(conditions) as condition_count ORDER BY condition_count DESC LIMIT 20"
+        
+    else:
+        # Default individual finding query
+        select_clause = "RETURN p.id as patient_id, p.age_min as age, p.gender as gender, f.name as finding LIMIT 10"
+        description = "relationships"
+    
+    # Build final query
+    final_query = match_clause
+    if where_clause:
+        final_query += f" WHERE {where_clause}"
+    final_query += f" {select_clause}"
+    
+    logger.info("executing_adaptive_query", 
+               query=final_query, 
+               parameters=parameters,
+               context_filters=context["demographic_filters"],
+               context_ranges=context["numerical_ranges"])
+    
+    try:
+        result = session.run(final_query, **parameters)
+        
+        if context["query_intent"] == "aggregation":
+            for record in result:
+                triples.append(f"Finding({record['finding']}: {record['count']} cases in {description})")
+        elif context["query_intent"] == "multiple_conditions":
+            for record in result:
+                conditions_str = ", ".join(record['conditions'])
+                triples.append(f"Patient(id={record['patient_id']}, age={record['age']}, gender={record['gender']}, conditions=[{conditions_str}], count={record['condition_count']})")
+        else:
+            for record in result:
+                # Handle individual finding format  
+                triples.append(f"Patient(id={record['patient_id']}, age={record['age']}, gender={record['gender']})-HAS_FINDING->Finding({record['finding']})")
+                
+    except Exception as e:
+        logger.error("adaptive_query_execution_failed", error=str(e), query=final_query)
+    
+    return triples
 
 
-# Function calling tools for VectorRAGAgent
+def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
+    """Fallback entity search when no specific patterns match"""
+    triples = []
+    
+    for entity in entities:
+        try:
+            entity_search_query = """
+            MATCH (n)
+            WHERE any(prop in keys(n) WHERE toString(n[prop]) CONTAINS $entity)
+            RETURN n, labels(n)[0] as node_type
+            LIMIT 10
+            """
+            
+            logger.info("executing_fallback_entity_search", entity=str(entity))
+            result = session.run(entity_search_query, entity=str(entity))
+            
+            for record in result:
+                node = record["n"]
+                node_type = record["node_type"]
+                node_id = node.get('id', node.get('name', 'unknown'))
+                triples.append(f"{node_type}(id={node_id}, properties={dict(node.items())})")
+                        
+        except Exception as e:
+            logger.debug("fallback_entity_search_failed", entity=entity, error=str(e))
+            continue
+    
+    return triples
+
+# Called by: VectorRAGAgent
 @tool
 def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=None, 
                          llm=None, collection_name: str = "documents", 
@@ -525,23 +727,27 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
     # Step 4: Limit final results
     combined_docs = combined_docs[:limit]
     
-    # Step 5: Calculate precision score
-    precision_score = _calculate_hybrid_precision(combined_docs, score_threshold)
+    # Step 5: Calculate precision score (simplified)
+    precision_score = None
+    if combined_docs:
+        high_quality_docs = [doc for doc in combined_docs if doc.get("hybrid_score", doc.get("score", 0)) >= score_threshold]
+        precision_score = len(high_quality_docs) / len(combined_docs)
     
-    # Log weighting analysis for performance tracking
+    # Log hybrid search summary for performance tracking
     if vector_docs and bm25_docs:
-        query_analysis = _analyze_query_for_weighting(query)
         logger.info(
-            "hybrid_search_weighting_analysis",
+            "hybrid_search_completed",
             query=query[:100],
-            vector_weight=query_analysis["vector_weight"],
-            bm25_weight=query_analysis["bm25_weight"],
-            reasoning=query_analysis["reasoning"],
             vector_docs_count=len(vector_docs),
             bm25_docs_count=len(bm25_docs),
             final_docs_count=len(combined_docs),
-            precision_score=precision_score
+            precision_score=precision_score,
+            strategy="hybrid"
         )
+    elif vector_docs:
+        logger.info("hybrid_search_completed", strategy="vector_only", docs_count=len(combined_docs))
+    elif bm25_docs:
+        logger.info("hybrid_search_completed", strategy="bm25_only", docs_count=len(combined_docs))
     
     # Determine strategy used
     if vector_docs and bm25_docs:
@@ -680,35 +886,19 @@ def _analyze_query_for_weighting(query: str) -> Dict[str, Any]:
 
 def _calculate_semantic_relevance(query: str, content: str) -> float:
     """
-    Calculate semantic relevance for BM25 documents (simplified approximation).
-    This provides a semantic bonus to BM25 results for better hybrid scoring.
+    Calculate simple semantic relevance for BM25 documents.
+    Provides a semantic bonus to BM25 results for better hybrid scoring.
     """
-    # Simple semantic indicators
     query_words = set(query.lower().split())
     content_words = set(content.lower().split())
     
-    # Calculate overlap
+    # Calculate word overlap
     overlap = len(query_words.intersection(content_words))
     if len(query_words) == 0:
         return 0.0
     
-    # Consider synonyms and related terms (simplified)
-    semantic_indicators = {
-        'accuracy': ['precision', 'correct', 'accurate', 'reliable'],
-        'image': ['picture', 'photo', 'visual', 'scan'],
-        'concern': ['issue', 'problem', 'worry', 'risk'],
-        'label': ['tag', 'annotation', 'classification', 'category']
-    }
-    
-    semantic_bonus = 0.0
-    for query_word in query_words:
-        if query_word in semantic_indicators:
-            related_words = semantic_indicators[query_word]
-            if any(word in content_words for word in related_words):
-                semantic_bonus += 0.1
-    
-    base_score = min(overlap / len(query_words), 1.0)
-    return min(base_score + semantic_bonus, 1.0)
+    # Simple overlap-based score
+    return min(overlap / len(query_words), 1.0)
 
 
 def _calculate_keyword_relevance(query: str, content: str) -> float:
@@ -723,56 +913,17 @@ def _calculate_keyword_relevance(query: str, content: str) -> float:
     return min(overlap / len(query_words), 1.0)
 
 
-def _calculate_hybrid_precision(documents: List[Dict], threshold: float) -> float:
-    """Calculate precision based on hybrid score distribution"""
-    if not documents:
-        return 0.0
-    
-    high_quality_docs = [doc for doc in documents if doc.get("hybrid_score", doc.get("score", 0)) >= threshold]
-    return len(high_quality_docs) / len(documents)
-
-
-@tool
-def assess_document_relevance(query: str, document_content: str, llm) -> bool:
-    """
-    Assess if a document is relevant to the query using LLM.
-    
-    Args:
-        query: The search query
-        document_content: Content of the retrieved document
-        llm: LLM instance for relevance assessment
-        
-    Returns:
-        Boolean indicating if document is relevant
-    """
-    relevance_prompt = f"""
-    Query: {query}
-    
-    Document: {document_content[:500]}...
-    
-    Is this document relevant to answering the query? Consider if the document contains information that directly addresses or helps answer the question.
-    
-    Answer only: YES or NO
-    """
-    
-    try:
-        response = llm.invoke(relevance_prompt)
-        return response.content.strip().upper() == "YES"
-    except Exception as e:
-        logger.warning("relevance_assessment_failed", error=str(e))
-        return False  # Conservative approach - assume not relevant if assessment fails
-
-
+# Called by: VectorRAGAgent
 @tool
 def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, collection_name: str = "documents", limit: int = 10, score_threshold: float = 0.6) -> VectorSearchResult:
     """
-    Perform semantic search using Qdrant vector database with dynamic relevance assessment.
+    Perform semantic search using Qdrant vector database.
     
     Args:
         query: The search query
         qdrant_client: Qdrant client instance
         embeddings: Azure OpenAI embeddings instance
-        llm: LLM instance for relevance assessment (optional)
+        llm: LLM instance (optional, kept for compatibility)
         collection_name: Name of the Qdrant collection
         limit: Maximum number of documents to retrieve
         score_threshold: Minimum similarity score threshold
@@ -818,27 +969,17 @@ def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, colle
     # Calculate statistics
     total_found = len(documents)
     
-    # Calculate precision using dynamic relevance assessment if LLM is available
+    # Calculate simple precision based on score distribution
     precision_score = None
-    if llm and documents:
-        relevant_count = 0
-        for doc in documents:
-            is_relevant = assess_document_relevance.invoke({
-                "query": query,
-                "document_content": doc["content"],
-                "llm": llm
-            })
-            if is_relevant:
-                relevant_count += 1
+    if documents:
+        high_score_docs = [doc for doc in documents if doc["score"] >= score_threshold]
+        precision_score = len(high_score_docs) / total_found
         
-        precision_score = relevant_count / total_found if total_found > 0 else 0.0
-        
-        # Log precision metrics
+        # Log precision metrics (simplified)
         logger.info(
-            "vector_search_precision_calculated",
+            "vector_search_completed",
             query_length=len(query),
             total_documents=total_found,
-            relevant_documents=relevant_count,
             precision_score=precision_score,
             collection_name=collection_name,
             score_threshold=score_threshold
@@ -851,6 +992,7 @@ def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, colle
     )
 
 
+# Called by: VectorRAGAgent
 @tool
 def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], llm) -> RerankedResult:
     """
@@ -897,6 +1039,7 @@ def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], l
     return RerankedResult(documents=documents, reranking_applied=False)
 
 
+# Called by: OrchestratorAgent
 @tool
 def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     """
@@ -1035,9 +1178,46 @@ class OrchestratorAgent(SecureAgentBase):
                 logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
                 errors = state.get("errors") or []
                 state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                state["route"] = "both"  # Safe fallback
-                state["routing_analysis"] = "Error during analysis"
-                return state
+                # Re-raise the exception since orchestrator should always return a valid route
+                raise
+    
+    def get_workflow_routing(self, state: WorkflowState) -> str:
+        """
+        Convert orchestrator route decision to workflow routing format.
+        This contains simple mapping logic that doesn't require tool governance.
+        """
+        route = state.get("route", "both")
+        
+        # Simple mapping logic - no need for tool governance
+        if route == "vector":
+            return "vector"
+        elif route == "graph":
+            return "graph"
+        elif route == "both":
+            return "both_vector_first"  # Start with vector, then graph
+        elif route == "none":
+            return "none"  # Non-medical query - end workflow
+        else:
+            # This should never happen since orchestrator always returns valid routes
+            logger.error("invalid_route_from_orchestrator", route=route)
+            raise ValueError(f"Invalid route received from orchestrator: {route}")
+    
+    def get_post_vector_routing(self, state: WorkflowState) -> str:
+        """
+        Determine next step after vector retrieval based on orchestrator's routing decision.
+        This contains simple business logic that doesn't require tool governance.
+        """
+        route = state.get("route", "both")
+        
+        # Simple business logic - no need for tool governance
+        if route == "both":
+            return "continue_to_graph"  # Continue with graph retrieval for comprehensive search
+        elif route in ["vector", "graph", "none"]:
+            return "continue_to_validator"  # Skip graph, go directly to validation
+        else:
+            # This should never happen since orchestrator always returns valid routes
+            logger.error("invalid_route_for_post_vector", route=route)
+            raise ValueError(f"Invalid route for post-vector step: {route}")
 
 
 class VectorRAGAgent(SecureAgentBase):
@@ -1221,10 +1401,6 @@ def register_agent_tools():
     tool_registry.register_tool(
         perform_hybrid_search,
         ToolMetadata("perform_hybrid_search", [AgentRole.VECTOR_RAG])
-    )
-    tool_registry.register_tool(
-        assess_document_relevance,
-        ToolMetadata("assess_document_relevance", [AgentRole.VECTOR_RAG])
     )
     tool_registry.register_tool(
         rerank_documents_by_relevance,

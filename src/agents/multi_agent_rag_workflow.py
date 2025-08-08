@@ -136,7 +136,7 @@ class MultiAgentRAGWorkflow:
             # Fetch documents from Qdrant
             scroll_result = self.qdrant_client.scroll(
                 collection_name=collection_name,
-                limit=500,  # Reasonable limit for BM25 indexing
+                limit=5000,  # Reasonable limit for BM25 indexing
                 with_payload=True,
                 with_vectors=False
             )
@@ -210,7 +210,8 @@ class MultiAgentRAGWorkflow:
             {
                 "vector": "vector_rag",
                 "graph": "graph_rag", 
-                "both_vector_first": "vector_rag"
+                "both_vector_first": "vector_rag",
+                "none": END  # Handle non-medical queries - go directly to END
             }
         )
         
@@ -294,6 +295,8 @@ class MultiAgentRAGWorkflow:
             return "graph"
         elif route == "both":
             return "both_vector_first"  # Start with vector, then graph
+        elif route == "none":
+            return "none"  # Non-medical query - end workflow
         else:
             # This should never happen with function calling OrchestratorAgent
             # but provide fallback for safety
@@ -328,8 +331,12 @@ class MultiAgentRAGWorkflow:
             # Run the workflow
             result = self.workflow.invoke(initial_state)
             
-            # Extract final answer
-            final_answer = result.get("answer", "No answer generated")
+            # Extract final answer - handle both medical and non-medical cases
+            final_answer = result.get("final_answer")  # Non-medical queries
+            if not final_answer:
+                final_answer = result.get("answer")  # Medical queries
+            if not final_answer:
+                final_answer = "No answer generated"
             
             logger.info("workflow_completed", answer_length=len(final_answer))
             
@@ -349,8 +356,9 @@ def main():
         workflow = MultiAgentRAGWorkflow()
         
         # Example query
+        #query ="what is .net?"
         #query = "What is NIH Chest X-ray?"
-        query ="Provide concerns about the image label accuracy"
+        query ="Provide concerns about the image label accuracy in medical"
         #query ="Tell me about the medical history of patient ID 1, including all findings and their progression"
         #query ="Tell me about the medical history of patient ID 1, including all findings and their progression?"
         print(f"Query: {query}")

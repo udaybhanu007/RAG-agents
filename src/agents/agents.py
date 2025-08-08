@@ -108,7 +108,13 @@ MEDICAL or NON_MEDICAL
         response = llm.invoke(validation_prompt.format(query=query))
         content = str(response.content).strip().upper()
         
-        is_medical = "MEDICAL" in content
+        # Fix: More precise pattern matching to avoid false positives
+        # "NON_MEDICAL" contains "MEDICAL" so we need to check for exact matches
+        if content == "MEDICAL":
+            is_medical = True
+        else:
+            is_medical = False       
+            logger.warning("medical_validation_unexpected_format", content=content[:50])
         
         quick_response = None
         if not is_medical:

@@ -150,8 +150,8 @@ class MultiAgentRAGWorkflow:
             # Convert to LangChain Documents
             documents = []
             for point in points:
-                content = point.payload.get("chunk", "")
-                metadata = point.payload.get("metadata", {})
+                content = point.payload.get("chunk", "") # type: ignore
+                metadata = point.payload.get("metadata", {}) # type: ignore
                 
                 if content.strip():  # Only non-empty content
                     documents.append(Document(

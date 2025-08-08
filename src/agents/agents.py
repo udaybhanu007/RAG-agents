@@ -71,6 +71,7 @@ class HybridSearchResult(BaseModel):
     precision_score: Optional[float] = Field(description="Hybrid precision score")
 
 
+# Called by: OrchestratorAgent
 @tool
 def validate_medical_relevance(query: str, llm) -> QueryValidation:
     """
@@ -88,19 +89,49 @@ def validate_medical_relevance(query: str, llm) -> QueryValidation:
 You are a medical query classifier. Determine if this query is medical/healthcare related.
 
 MEDICAL/HEALTHCARE queries include:
-- Medical conditions, diseases, symptoms, treatments
-- Anatomy, physiology, medications, procedures
-- Healthcare systems, medical diagnostics
-- Patient care, clinical scenarios
+- Medical conditions, diseases, symptoms, treatments, diagnostics
+- Anatomy, physiology, medications, procedures, therapies
+- Healthcare systems, medical diagnostics, clinical workflows
+- Patient care, clinical scenarios, medical consultations
+- Medical imaging (X-rays, CT scans, MRI, ultrasound, mammography)
+- Medical informatics, health IT, electronic health records (EHR)
+- Medical databases, healthcare data management, clinical data
+- Medical research, clinical studies, epidemiology
+- Healthcare technology, medical devices, telemedicine
+- Medical education, clinical training, medical curricula
+- Public health, preventive medicine, health policy
+- Medical documentation, clinical notes, medical reports
+- Hospital management, healthcare administration
+- Biomedical engineering in healthcare context
+- Medical AI, clinical decision support systems
+
+SPECIFIC MEDICAL CONTEXTS to always classify as MEDICAL:
+- Hospital-scale databases, medical data systems
+- Chest X-ray databases, medical imaging repositories
+- Clinical data collection and management
+- Healthcare infrastructure and technology
+- Medical dataset construction and analysis
+- Patient information systems
+- Clinical research databases
 
 NON-MEDICAL queries include:
-- General greetings, technology, programming
-- Sports, entertainment, travel, cooking
-- Business, finance, academic (non-medical)
+- General greetings, casual conversation
+- Pure technology/programming (without medical context)
+- Sports, entertainment, travel, cooking, lifestyle
+- Business, finance, general academic topics
+- General software development (non-healthcare)
+- Non-medical databases or systems
+
+IMPORTANT GUIDELINES:
+- If the query mentions medical terms (X-ray, hospital, patient, clinical, diagnostic) → MEDICAL
+- If the query is about medical technology or healthcare IT → MEDICAL
+- If the query combines medical + technology contexts → MEDICAL
+- Medical database construction, medical data analysis → MEDICAL
+- Only classify as NON_MEDICAL if completely unrelated to healthcare
 
 Query: "{query}"
 
-Respond with only:
+Analyze the query carefully for medical context. Respond with only:
 MEDICAL or NON_MEDICAL
 """
 
@@ -108,17 +139,43 @@ MEDICAL or NON_MEDICAL
         response = llm.invoke(validation_prompt.format(query=query))
         content = str(response.content).strip().upper()
         
-        # Fix: More precise pattern matching to avoid false positives
-        # "NON_MEDICAL" contains "MEDICAL" so we need to check for exact matches
+        # Enhanced pattern matching with better edge case handling
         if content == "MEDICAL":
             is_medical = True
+        elif content == "NON_MEDICAL" or content == "NON-MEDICAL":
+            is_medical = False
+        elif "MEDICAL" in content and "NON" not in content:
+            # Handle cases where LLM returns "MEDICAL" with extra text
+            is_medical = True
+        elif "NON" in content and "MEDICAL" in content:
+            # Handle "NON_MEDICAL" or "NON-MEDICAL" variations
+            is_medical = False
         else:
-            is_medical = False       
-            logger.warning("medical_validation_unexpected_format", content=content[:50])
+            # Fallback: Check for medical keywords in the query as safety net
+            medical_keywords = [
+                'medical', 'hospital', 'patient', 'clinical', 'health', 'disease',
+                'symptom', 'treatment', 'diagnosis', 'doctor', 'nurse', 'surgery',
+                'x-ray', 'ct scan', 'mri', 'ultrasound', 'imaging', 'chest',
+                'anatomy', 'physiology', 'medication', 'drug', 'therapeutic',
+                'healthcare', 'medicine', 'clinic', 'emergency', 'icu',
+                'radiolog', 'patholog', 'cardiolog', 'oncolog', 'neurol'
+            ]
+            
+            query_lower = query.lower()
+            has_medical_keywords = any(keyword in query_lower for keyword in medical_keywords)
+            
+            if has_medical_keywords:
+                is_medical = True
+                logger.info("medical_validation_fallback_to_keywords", 
+                           query=query[:100], llm_response=content[:50])
+            else:
+                is_medical = False
+                logger.warning("medical_validation_unexpected_format", 
+                             content=content[:50], query=query[:100])
         
         quick_response = None
         if not is_medical:
-            quick_response = "I'm a medical knowledge assistant specialized in healthcare topics. Please ask me questions about medical conditions, treatments, symptoms, or other healthcare-related matters."
+            quick_response = "I'm a medical knowledge assistant specialized in healthcare topics. Please ask me questions about medical conditions, treatments, symptoms, medical databases, healthcare technology, or other healthcare-related matters."
         
         return QueryValidation(
             is_medical=is_medical,
@@ -134,7 +191,7 @@ MEDICAL or NON_MEDICAL
         )
 
 
-# Function calling tools for OrchestratorAgent
+# Called by: OrchestratorAgent
 @tool
 def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnalysis:
     """
@@ -226,7 +283,7 @@ REASONING: [Brief explanation focusing on entities and relationships detected]
         )
 
 
-# Function calling tools for GraphRAGAgent
+# Called by: GraphRAGAgent
 @tool
 def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     """
@@ -308,6 +365,7 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     )
 
 
+# Called by: GraphRAGAgent
 @tool
 def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_query: str = "") -> GraphQueryResult:
     """
@@ -580,33 +638,7 @@ def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
     
     return triples
 
-def _calculate_entity_relevance(entity: str, property_value: str) -> float:
-    """Calculate relevance score like Vector DB approach"""
-    entity_lower = entity.lower()
-    value_lower = property_value.lower()
-    
-    if entity_lower == value_lower:
-        return 1.0
-    elif entity_lower in value_lower:
-        return 0.8
-    elif any(word in value_lower for word in entity_lower.split()):
-        return 0.6
-    else:
-        return 0.3
-
-
-def _calculate_relationship_relevance(entity1: str, entity2: str, rel_type: str) -> float:
-    """Calculate relationship relevance like Vector DB scoring"""
-    base_score = 0.7  # Base relationship score
-    
-    # Boost for common medical relationships
-    if any(term in rel_type.upper() for term in ["HAS", "FINDING", "LOCATED", "CONTAINS"]):
-        base_score += 0.2
-    
-    return min(base_score, 1.0)
-
-
-# Function calling tools for VectorRAGAgent
+# Called by: VectorRAGAgent
 @tool
 def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=None, 
                          llm=None, collection_name: str = "documents", 
@@ -695,23 +727,27 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
     # Step 4: Limit final results
     combined_docs = combined_docs[:limit]
     
-    # Step 5: Calculate precision score
-    precision_score = _calculate_hybrid_precision(combined_docs, score_threshold)
+    # Step 5: Calculate precision score (simplified)
+    precision_score = None
+    if combined_docs:
+        high_quality_docs = [doc for doc in combined_docs if doc.get("hybrid_score", doc.get("score", 0)) >= score_threshold]
+        precision_score = len(high_quality_docs) / len(combined_docs)
     
-    # Log weighting analysis for performance tracking
+    # Log hybrid search summary for performance tracking
     if vector_docs and bm25_docs:
-        query_analysis = _analyze_query_for_weighting(query)
         logger.info(
-            "hybrid_search_weighting_analysis",
+            "hybrid_search_completed",
             query=query[:100],
-            vector_weight=query_analysis["vector_weight"],
-            bm25_weight=query_analysis["bm25_weight"],
-            reasoning=query_analysis["reasoning"],
             vector_docs_count=len(vector_docs),
             bm25_docs_count=len(bm25_docs),
             final_docs_count=len(combined_docs),
-            precision_score=precision_score
+            precision_score=precision_score,
+            strategy="hybrid"
         )
+    elif vector_docs:
+        logger.info("hybrid_search_completed", strategy="vector_only", docs_count=len(combined_docs))
+    elif bm25_docs:
+        logger.info("hybrid_search_completed", strategy="bm25_only", docs_count=len(combined_docs))
     
     # Determine strategy used
     if vector_docs and bm25_docs:
@@ -850,35 +886,19 @@ def _analyze_query_for_weighting(query: str) -> Dict[str, Any]:
 
 def _calculate_semantic_relevance(query: str, content: str) -> float:
     """
-    Calculate semantic relevance for BM25 documents (simplified approximation).
-    This provides a semantic bonus to BM25 results for better hybrid scoring.
+    Calculate simple semantic relevance for BM25 documents.
+    Provides a semantic bonus to BM25 results for better hybrid scoring.
     """
-    # Simple semantic indicators
     query_words = set(query.lower().split())
     content_words = set(content.lower().split())
     
-    # Calculate overlap
+    # Calculate word overlap
     overlap = len(query_words.intersection(content_words))
     if len(query_words) == 0:
         return 0.0
     
-    # Consider synonyms and related terms (simplified)
-    semantic_indicators = {
-        'accuracy': ['precision', 'correct', 'accurate', 'reliable'],
-        'image': ['picture', 'photo', 'visual', 'scan'],
-        'concern': ['issue', 'problem', 'worry', 'risk'],
-        'label': ['tag', 'annotation', 'classification', 'category']
-    }
-    
-    semantic_bonus = 0.0
-    for query_word in query_words:
-        if query_word in semantic_indicators:
-            related_words = semantic_indicators[query_word]
-            if any(word in content_words for word in related_words):
-                semantic_bonus += 0.1
-    
-    base_score = min(overlap / len(query_words), 1.0)
-    return min(base_score + semantic_bonus, 1.0)
+    # Simple overlap-based score
+    return min(overlap / len(query_words), 1.0)
 
 
 def _calculate_keyword_relevance(query: str, content: str) -> float:
@@ -893,56 +913,17 @@ def _calculate_keyword_relevance(query: str, content: str) -> float:
     return min(overlap / len(query_words), 1.0)
 
 
-def _calculate_hybrid_precision(documents: List[Dict], threshold: float) -> float:
-    """Calculate precision based on hybrid score distribution"""
-    if not documents:
-        return 0.0
-    
-    high_quality_docs = [doc for doc in documents if doc.get("hybrid_score", doc.get("score", 0)) >= threshold]
-    return len(high_quality_docs) / len(documents)
-
-
-@tool
-def assess_document_relevance(query: str, document_content: str, llm) -> bool:
-    """
-    Assess if a document is relevant to the query using LLM.
-    
-    Args:
-        query: The search query
-        document_content: Content of the retrieved document
-        llm: LLM instance for relevance assessment
-        
-    Returns:
-        Boolean indicating if document is relevant
-    """
-    relevance_prompt = f"""
-    Query: {query}
-    
-    Document: {document_content[:500]}...
-    
-    Is this document relevant to answering the query? Consider if the document contains information that directly addresses or helps answer the question.
-    
-    Answer only: YES or NO
-    """
-    
-    try:
-        response = llm.invoke(relevance_prompt)
-        return response.content.strip().upper() == "YES"
-    except Exception as e:
-        logger.warning("relevance_assessment_failed", error=str(e))
-        return False  # Conservative approach - assume not relevant if assessment fails
-
-
+# Called by: VectorRAGAgent
 @tool
 def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, collection_name: str = "documents", limit: int = 10, score_threshold: float = 0.6) -> VectorSearchResult:
     """
-    Perform semantic search using Qdrant vector database with dynamic relevance assessment.
+    Perform semantic search using Qdrant vector database.
     
     Args:
         query: The search query
         qdrant_client: Qdrant client instance
         embeddings: Azure OpenAI embeddings instance
-        llm: LLM instance for relevance assessment (optional)
+        llm: LLM instance (optional, kept for compatibility)
         collection_name: Name of the Qdrant collection
         limit: Maximum number of documents to retrieve
         score_threshold: Minimum similarity score threshold
@@ -988,27 +969,17 @@ def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, colle
     # Calculate statistics
     total_found = len(documents)
     
-    # Calculate precision using dynamic relevance assessment if LLM is available
+    # Calculate simple precision based on score distribution
     precision_score = None
-    if llm and documents:
-        relevant_count = 0
-        for doc in documents:
-            is_relevant = assess_document_relevance.invoke({
-                "query": query,
-                "document_content": doc["content"],
-                "llm": llm
-            })
-            if is_relevant:
-                relevant_count += 1
+    if documents:
+        high_score_docs = [doc for doc in documents if doc["score"] >= score_threshold]
+        precision_score = len(high_score_docs) / total_found
         
-        precision_score = relevant_count / total_found if total_found > 0 else 0.0
-        
-        # Log precision metrics
+        # Log precision metrics (simplified)
         logger.info(
-            "vector_search_precision_calculated",
+            "vector_search_completed",
             query_length=len(query),
             total_documents=total_found,
-            relevant_documents=relevant_count,
             precision_score=precision_score,
             collection_name=collection_name,
             score_threshold=score_threshold
@@ -1021,6 +992,7 @@ def perform_vector_search(query: str, qdrant_client, embeddings, llm=None, colle
     )
 
 
+# Called by: VectorRAGAgent
 @tool
 def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], llm) -> RerankedResult:
     """
@@ -1067,6 +1039,7 @@ def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], l
     return RerankedResult(documents=documents, reranking_applied=False)
 
 
+# Called by: OrchestratorAgent
 @tool
 def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     """
@@ -1428,10 +1401,6 @@ def register_agent_tools():
     tool_registry.register_tool(
         perform_hybrid_search,
         ToolMetadata("perform_hybrid_search", [AgentRole.VECTOR_RAG])
-    )
-    tool_registry.register_tool(
-        assess_document_relevance,
-        ToolMetadata("assess_document_relevance", [AgentRole.VECTOR_RAG])
     )
     tool_registry.register_tool(
         rerank_documents_by_relevance,

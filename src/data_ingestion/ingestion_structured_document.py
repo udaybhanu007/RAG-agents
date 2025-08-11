@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 from .utility_functions import UtilityFunctions
 from .ExtractedResponse import ExtractedResponse
-
+from core.azure_keyvault_manager import get_secret_from_keyvault
 class StructuredDocumentIngestor:
     def __init__(self):
         pass
@@ -29,8 +29,8 @@ class StructuredDocumentIngestor:
         source_filename = os.path.basename(file_path)
         
         # Generate blob URL from environment variables if available
-        storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
-        container_name = os.environ.get("AZURE_BLOB_CONTAINER_NAME", "rag-agents-container")
+        storage_account = get_secret_from_keyvault("AZURE_STORAGE_ACCOUNT_NAME")
+        container_name = get_secret_from_keyvault("AZURE_BLOB_CONTAINER_NAME")
         
         metadata = {
             "file_path": file_path,

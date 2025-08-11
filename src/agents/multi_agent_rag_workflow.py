@@ -2,7 +2,6 @@ import os
 import ssl
 import urllib3
 from typing import Dict, Any
-from dotenv import load_dotenv
 
 # Disable SSL verification globally before any other imports
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -26,15 +25,15 @@ from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
 from core.observability import observability, traceable, get_traceable_config
 from logging_config import configure_logging, get_logger
 from sentence_transformers import SentenceTransformer
+from core.azure_keyvault_manager import get_secret_from_keyvault
 
-# Load environment variables
-load_dotenv()
+# Note: Environment loading is handled by azure_keyvault_manager based on Keyvalue_Enabled flag
 
 # Configure centralized logging once at startup
 configure_logging(
-    log_level=os.getenv("LOG_LEVEL", "INFO"),
-    enable_json=os.getenv("ENABLE_JSON_LOGS", "true").lower() == "true",
-    enable_colors=os.getenv("ENABLE_COLORED_LOGS", "false").lower() == "true"
+    log_level=os.getenv("LOG_LEVEL") or "INFO",
+    enable_json=(os.getenv("ENABLE_JSON_LOGS") or "true").lower() == "true",
+    enable_colors=(os.getenv("ENABLE_COLORED_LOGS") or "false").lower() == "true"
 )
 
 logger = get_logger("workflow_engine")
@@ -70,9 +69,15 @@ class MultiAgentRAGWorkflow:
         """Initialize all LLMs, databases, and agents"""
         try:
             # Initialize LLM
+            azure_deployment = get_secret_from_keyvault("AZURE_OPENAI_DEPLOYMENT")
+            azure_api_version = get_secret_from_keyvault("AZURE_OPENAI_API_VERSION")
+            
+            if not azure_deployment or not azure_api_version:
+                raise ValueError("Azure OpenAI credentials not found. Required: AZURE_OPENAI_DEPLOYMENT, AZURE_OPENAI_API_VERSION")
+            
             self.llm = AzureChatOpenAI(
-                azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini"),
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
+                azure_deployment=azure_deployment,
+                api_version=azure_api_version,
                 temperature=0.0
             )
             
@@ -103,18 +108,28 @@ class MultiAgentRAGWorkflow:
             # )
             
             # Initialize Qdrant client
+            qdrant_url = get_secret_from_keyvault("QDRANT_API_URL")
+            qdrant_api_key = get_secret_from_keyvault("QDRANT_API_KEY")
+            
+            if not qdrant_url or not qdrant_api_key:
+                raise ValueError("Qdrant credentials not found. Required: QDRANT_API_URL, QDRANT_API_KEY")
+            
             self.qdrant_client = QdrantClient(
-                url=os.getenv("QDRANT_API_URL", "http://localhost:6333"),
-                api_key=os.getenv("QDRANT_API_KEY")
+                url=qdrant_url,
+                api_key=qdrant_api_key
             )
             
             # Initialize Neo4j driver
+            neo4j_uri = get_secret_from_keyvault("NEO4J_URI")
+            neo4j_username = get_secret_from_keyvault("NEO4J_USERNAME")
+            neo4j_password = get_secret_from_keyvault("NEO4J_PASSWORD")
+            
+            if not neo4j_uri or not neo4j_username or not neo4j_password:
+                raise ValueError("Neo4j credentials not found. Required: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD")
+            
             self.neo4j_driver = GraphDatabase.driver(
-                os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-                auth=(
-                    os.getenv("NEO4J_USERNAME", "neo4j"),
-                    os.getenv("NEO4J_PASSWORD", "password")
-                )
+                neo4j_uri,
+                auth=(neo4j_username, neo4j_password)
             )
             
             # Initialize BM25 retriever (configurable initialization)
@@ -129,10 +144,13 @@ class MultiAgentRAGWorkflow:
             
             # Initialize all agents
             self.orchestrator = OrchestratorAgent(llm=self.llm)  # Pass LLM for medical validation
+            
+            collection_name = get_secret_from_keyvault("QDRANT_COLLECTION") or "documents"
+            
             self.vector_rag = VectorRAGAgent(
                 self.qdrant_client, 
                 self.embeddings,
-                collection_name=os.getenv("QDRANT_COLLECTION", "documents"),
+                collection_name=collection_name,
                 llm=self.llm,
                 bm25_retriever=self.bm25_retriever
             )
@@ -157,7 +175,7 @@ class MultiAgentRAGWorkflow:
                 logger.error("bm25_initialization_failed", error="qdrant_client not available")
                 return None
             
-            collection_name = os.getenv("QDRANT_COLLECTION", "documents")
+            collection_name = get_secret_from_keyvault("QDRANT_COLLECTION") or "documents"
             
             # Fetch documents from Qdrant
             scroll_result = self.qdrant_client.scroll(

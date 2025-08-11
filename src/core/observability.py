@@ -7,7 +7,7 @@ from typing import Dict, Any
 from langsmith import Client
 from langsmith.run_helpers import traceable
 from logging_config import get_logger
-
+from core.azure_keyvault_manager import get_secret_from_keyvault
 logger = get_logger("observability")
 
 # LangSmith Configuration
@@ -22,7 +22,7 @@ LANGSMITH_CONFIG = {
 # Initialize LangSmith client
 try:
     langsmith_client = Client(
-        api_key=os.getenv("LANGCHAIN_API_KEY"),
+        api_key=get_secret_from_keyvault("LANGCHAIN_API_KEY"),
         **LANGSMITH_CONFIG
     )
     logger.info("LangSmith client initialized successfully")

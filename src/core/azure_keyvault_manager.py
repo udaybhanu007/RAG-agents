@@ -182,85 +182,85 @@ def list_keyvault_secrets() -> List[str]:
         return []
 
 
-def debug_environment_variables():
-    """Debug function to show loaded environment variables."""
-    print("\nDEBUG: Environment Variables Status:")
-    print("-" * 50)
+# def debug_environment_variables():
+#     """Debug function to show loaded environment variables."""
+#     print("\nDEBUG: Environment Variables Status:")
+#     print("-" * 50)
     
-    relevant_vars = [k for k in os.environ.keys() if any(keyword in k.upper() for keyword in 
-                    ['QDRANT', 'AZURE', 'NEO4J', 'KEYVALUE', 'OPENAI'])]
+#     relevant_vars = [k for k in os.environ.keys() if any(keyword in k.upper() for keyword in 
+#                     ['QDRANT', 'AZURE', 'NEO4J', 'KEYVALUE', 'OPENAI'])]
     
-    if relevant_vars:
-        for var in sorted(relevant_vars):
-            value = os.environ[var]
-            display_value = value[:30] + "..." if len(value) > 30 else value
-            print(f"  {var} = {display_value}")
-    else:
-        print("  No relevant environment variables found")
+#     if relevant_vars:
+#         for var in sorted(relevant_vars):
+#             value = os.environ[var]
+#             display_value = value[:30] + "..." if len(value) > 30 else value
+#             print(f"  {var} = {display_value}")
+#     else:
+#         print("  No relevant environment variables found")
     
-    print(f"\nTotal environment variables: {len(os.environ)}")
-    print(f"Project root path: {project_root}")
-    print(f".env file exists: {os.path.exists(env_file_path)}")
-    print(f".env.dev file exists: {os.path.exists(env_dev_file_path)}")
+#     print(f"\nTotal environment variables: {len(os.environ)}")
+#     print(f"Project root path: {project_root}")
+#     print(f".env file exists: {os.path.exists(env_file_path)}")
+#     print(f".env.dev file exists: {os.path.exists(env_dev_file_path)}")
 
 
-def main():
-    """Test Azure Key Vault access with conditional environment fallback."""
-    print("Azure Key Vault Test with Conditional Configuration")
-    print("=" * 55)
+# def main():
+#     """Test Azure Key Vault access with conditional environment fallback."""
+#     print("Azure Key Vault Test with Conditional Configuration")
+#     print("=" * 55)
     
-    # Show debug information first
-    debug_environment_variables()
+#     # Show debug information first
+#     debug_environment_variables()
     
-    print(f"\nConfiguration Status:")
-    print("-" * 40)
-    print(f"Keyvalue_Enabled: {KEYVALUE_ENABLED}")
+#     print(f"\nConfiguration Status:")
+#     print("-" * 40)
+#     print(f"Keyvalue_Enabled: {KEYVALUE_ENABLED}")
     
-    if KEYVALUE_ENABLED:
-        print("🔑 Using Azure Key Vault for secrets")
-        print("\nTesting Azure Key Vault Connection:")
-        print("-" * 40)
+#     if KEYVALUE_ENABLED:
+#         print("🔑 Using Azure Key Vault for secrets")
+#         print("\nTesting Azure Key Vault Connection:")
+#         print("-" * 40)
         
-        try:
-            # Test connection by listing secrets
-            secrets = list_keyvault_secrets()
-            print(f"✅ Azure Key Vault connection successful")
-            print(f"Found {len(secrets)} secrets in Key Vault:")
-            for i, name in enumerate(secrets, 1):
-                print(f"  {i}. {name}")
-        except Exception as e:
-            print(f"❌ Azure Key Vault Error: {e}")
-    else:
-        print("📄 Using .env.dev file for secrets")
+#         try:
+#             # Test connection by listing secrets
+#             secrets = list_keyvault_secrets()
+#             print(f"✅ Azure Key Vault connection successful")
+#             print(f"Found {len(secrets)} secrets in Key Vault:")
+#             for i, name in enumerate(secrets, 1):
+#                 print(f"  {i}. {name}")
+#         except Exception as e:
+#             print(f"❌ Azure Key Vault Error: {e}")
+#     else:
+#         print("📄 Using .env.dev file for secrets")
     
-    # Test getting specific secrets
-    print(f"\nTesting Secret Retrieval ({'Key Vault' if KEYVALUE_ENABLED else '.env.dev'}):")
-    print("-" * 50)
+#     # Test getting specific secrets
+#     print(f"\nTesting Secret Retrieval ({'Key Vault' if KEYVALUE_ENABLED else '.env.dev'}):")
+#     print("-" * 50)
     
-    test_secrets = ["QDRANT_API_URL", "AZURE_OPENAI_API_KEY", "QDRANT_API_KEY"]
+#     test_secrets = ["QDRANT_API_URL", "AZURE_OPENAI_API_KEY", "QDRANT_API_KEY"]
     
-    for secret_name in test_secrets:
-        print(f"\nTesting '{secret_name}':")
-        secret_value = get_secret_from_keyvault(secret_name)
-        if secret_value:
-            print(f"✅ Found: {secret_value[:30]}...")
-        else:
-            print(f"❌ Not found")
+#     for secret_name in test_secrets:
+#         print(f"\nTesting '{secret_name}':")
+#         secret_value = get_secret_from_keyvault(secret_name)
+#         if secret_value:
+#             print(f"✅ Found: {secret_value[:30]}...")
+#         else:
+#             print(f"❌ Not found")
     
-    # Test multiple secrets
-    print("\nTesting Multiple Secrets:")
-    print("-" * 40)
+#     # Test multiple secrets
+#     print("\nTesting Multiple Secrets:")
+#     print("-" * 40)
     
-    results = get_secrets_from_keyvault(test_secrets)
-    for secret_name, value in results.items():
-        status = "✅ Found" if value else "❌ Missing"
-        print(f"  {secret_name}: {status}")
+#     results = get_secrets_from_keyvault(test_secrets)
+#     for secret_name, value in results.items():
+#         status = "✅ Found" if value else "❌ Missing"
+#         print(f"  {secret_name}: {status}")
     
-    print("\n" + "=" * 55)
-    print("Test completed!")
-    print(f"💡 Tip: Set Keyvalue_Enabled=true in .env to use Azure Key Vault")
-    print(f"💡 Tip: Set Keyvalue_Enabled=false in .env to use .env.dev file")
+#     print("\n" + "=" * 55)
+#     print("Test completed!")
+#     print(f"💡 Tip: Set Keyvalue_Enabled=true in .env to use Azure Key Vault")
+#     print(f"💡 Tip: Set Keyvalue_Enabled=false in .env to use .env.dev file")
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

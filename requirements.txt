@@ -1,8 +1,15 @@
 # Core scientific and data processing libraries
 pandas>=2.0.0
 numpy>=1.24.0
+python-dotenv>=1.0.0
 
-# PDF and document processing
+# Azure services
+azure-storage-blob>=12.19.0
+azure-keyvault-secrets>=4.7.0
+azure-identity>=1.15.0
+azure-identity-broker>=1.0.0
+
+# Unstructured document processing
 PyMuPDF>=1.23.0
 pymupdf4llm>=0.0.12
 Pillow>=10.0.0
@@ -12,9 +19,6 @@ sentence-transformers>=2.2.0
 
 # Qdrant vector database client
 qdrant-client>=1.7.0
-
-# Environment variable management
-python-dotenv>=1.0.0
 
 # For Excel/CSV/JSON/XML handling
 openpyxl>=3.1.0
@@ -52,5 +56,8 @@ langsmith>=0.0.70
 streamlit>=1.28.0
 rank_bm25>=0.2.0
 
-# Azure Blob Storage
+# Azure services
 azure-storage-blob>=12.19.0
+azure-keyvault-secrets>=4.7.0
+azure-identity>=1.15.0
+azure-identity>=1.15.0

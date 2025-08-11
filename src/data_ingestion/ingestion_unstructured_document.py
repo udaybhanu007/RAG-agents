@@ -6,15 +6,10 @@ from qdrant_client.models import Distance, VectorParams
 from sentence_transformers import SentenceTransformer
 from .chunking_unstructured import create_chunk
 from .utility_functions import UtilityFunctions
+import sys
 import os
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-# Read collection name from environment with fallback
-COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION")
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.azure_keyvault_manager import get_secret_from_keyvault
 
 class QdrantDBManager:
     """Manages Qdrant client and collection operations."""
@@ -75,10 +70,10 @@ class DocumentChunker:
             # Extract just the filename from file_path (remove directory path)
             source_filename = os.path.basename(file_path)
             
-            # Generate blob URL from environment variables if available
-            storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
-            container_name = os.environ.get("AZURE_BLOB_CONTAINER_NAME", "rag-agents-container")
-            
+            # Generate blob URL from Key Vault secrets
+            storage_account = get_secret_from_keyvault("AZURE_STORAGE_ACCOUNT_NAME")
+            container_name = get_secret_from_keyvault("AZURE_BLOB_CONTAINER_NAME") 
+
             blob_url = None
             if storage_account and container_name:
                 blob_url = f"https://{storage_account}.blob.core.windows.net/{container_name}/{source_filename}"
@@ -119,12 +114,20 @@ class EmbeddingManager:
 
 class UnstructuredDocumentIngestor:
     def __init__(self, api_url=None, api_key=None):
-        # Load from environment or .env file
-        self.collection_name = COLLECTION_NAME
-        self.api_url = api_url or os.environ.get("QDRANT_API_URL")
-        self.api_key = api_key or os.environ.get("QDRANT_API_KEY")
+        # Load from Azure Key Vault
+        self.collection_name = get_secret_from_keyvault("COLLECTION_NAME") 
+        
+        # Get secrets from Key Vault
+        self.api_url = api_url or get_secret_from_keyvault("QDRANT_API_URL")
+        self.api_key = api_key or get_secret_from_keyvault("QDRANT_API_KEY")
+        
         if not self.api_url or not self.api_key:
-            raise ValueError("QDRANT_API_URL and QDRANT_API_KEY must be set in the environment or .env file.")
+            raise ValueError(
+                "QDRANT_API_URL and QDRANT_API_KEY must be available from Azure Key Vault.\n"
+                "Required secrets: 'qdrant-api-url', 'qdrant-api-key'\n"
+                "Make sure you are logged in with Azure CLI and have access to the Key Vault."
+            )
+        
         self.chunker = DocumentChunker()
         self._collection_initialized = False
 

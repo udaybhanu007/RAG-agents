@@ -2,18 +2,18 @@
 
 import os
 from data_ingestion import document_ingestion_orchestrator
-from dotenv import load_dotenv
-# Load environment variables from .env file if available
-load_dotenv()
+from core.azure_keyvault_manager import get_secret_from_keyvault
 
 if __name__ == "__main__":
+
+    storage_account_name = get_secret_from_keyvault("AZURE_STORAGE_ACCOUNT_NAME")
+    storage_account_key = get_secret_from_keyvault("AZURE_STORAGE_ACCOUNT_KEY")
+    container_name = get_secret_from_keyvault("AZURE_BLOB_CONTAINER_NAME") or "rag-agents-container"
     adapter = document_ingestion_orchestrator.DocumentIngestionOrchestrator()
     
-    # Check if Azure credentials are provided via environment variables
-    storage_account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
-    storage_account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
-    container_name = os.getenv("AZURE_BLOB_CONTAINER_NAME", "rag-agents-container")
-    
+    # Get Azure credentials from Key Vault
+   
+
     if storage_account_name and storage_account_key:
         # Use Azure Blob Storage if credentials are available
         print("Azure credentials found. Processing files from Azure Blob Storage...")

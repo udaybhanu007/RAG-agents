@@ -1,5 +1,5 @@
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .ExtractedResponse import ExtractedResponse
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
@@ -71,16 +71,41 @@ class DocumentChunker:
                 chunk_str = chunk
             from datetime import datetime
             chunk_id = idx + 1
-            # Create a stable unique UUID for the chunk using file_path and chunk_id
-            unique_str = f"{file_path}:{chunk_id}"
+            
+            # Extract just the filename from file_path (remove directory path)
+            source_filename = os.path.basename(file_path)
+            
+            # Generate blob URL from environment variables if available
+            storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+            container_name = os.environ.get("AZURE_BLOB_CONTAINER_NAME", "rag-agents-container")
+            
+            blob_url = None
+            if storage_account and container_name:
+                blob_url = f"https://{storage_account}.blob.core.windows.net/{container_name}/{source_filename}"
+                
+            # Create a stable unique UUID for the chunk using source_filename and chunk_id
+            unique_str = f"{source_filename}:{chunk_id}"
             chunk_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, unique_str))
+            
             chunk_metadata = {
-                "file_path": file_path,
+                "file_path": source_filename,
                 "chunk_id": chunk_id,
                 "chunk_word_count": len(chunk_str.split()),
                 "created_date": datetime.now().strftime("%Y-%m-%d"),
                 "id": chunk_uuid
             }
+            
+            # Add blob URL and source info if available
+            if blob_url:
+                chunk_metadata.update({
+                    "blob_url": blob_url,
+                    "container_name": container_name,
+                    "storage_account": storage_account,
+                    "source_type": "azure_blob"
+                })
+            else:
+                chunk_metadata["source_type"] = "local_file"
+                
             chunk_list.append({"chunk": chunk_str, "metadata": chunk_metadata})
         print(f"   📝 Extracted {len(chunk_list)} narrative chunks using paragraph-based chunking.")
         return chunk_list
@@ -103,7 +128,7 @@ class UnstructuredDocumentIngestor:
         self.chunker = DocumentChunker()
         self._collection_initialized = False
 
-    def ingest_unstructured_document(self, file_path: str, content : str, classification: str = "un-structured") -> 'ExtractedResponse': # type: ignore
+    def ingest_unstructured_document(self, file_path: str, content : str, classification: str = "un-structured", blob_metadata: Optional[Dict[str, Any]] = None) -> 'ExtractedResponse': # type: ignore
         # Ensure Qdrant collection exists before chunking/ingestion
         self.qdrant_manager = QdrantDBManager(self.api_url, self.api_key, self.collection_name)  # type: ignore
         self.embedding_manager = EmbeddingManager()      

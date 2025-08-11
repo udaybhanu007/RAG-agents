@@ -3,10 +3,12 @@ import json
 import pymupdf4llm
 #import pdfplumber
 import pandas as pd
+import os
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 from .utility_functions import UtilityFunctions
+from .ExtractedResponse import ExtractedResponse
 
 class StructuredDocumentIngestor:
     def __init__(self):
@@ -23,14 +25,30 @@ class StructuredDocumentIngestor:
         structured_data = self.extract_structured_for_graph_db(full_text, tables)
         entities = self.extract_entities(full_text)
         relationships = self.extract_relationships(full_text, entities)
+        # Extract just the filename from file_path (remove directory path)
+        source_filename = os.path.basename(file_path)
+        
+        # Generate blob URL from environment variables if available
+        storage_account = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+        container_name = os.environ.get("AZURE_BLOB_CONTAINER_NAME", "rag-agents-container")
+        
         metadata = {
             "file_path": file_path,
-            "file_name": Path(file_path).name,
+            "file_name": source_filename,
             "classification": "structured",
             "document_type": UtilityFunctions.determine_document_type(full_text),
             "processing_timestamp": "2025-07-29T00:00:00Z"
         }
-        from ExtractedResponse import ExtractedResponse
+        
+        # Add blob URL and source info if available
+        if storage_account and container_name:
+            blob_url = f"https://{storage_account}.blob.core.windows.net/{container_name}/{source_filename}"
+            metadata["blob_url"] = blob_url
+            metadata["container_name"] = container_name
+            metadata["storage_account"] = storage_account
+            metadata["source_type"] = "azure_blob"
+        else:
+            metadata["source_type"] = "local_file"
         return ExtractedResponse(
             full_text=full_text,
             unstructured_chunks=[],

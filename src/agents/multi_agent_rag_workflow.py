@@ -1,6 +1,17 @@
 import os
-from typing import cast, Dict, Any
+import ssl
+import urllib3
+from typing import Dict, Any
 from dotenv import load_dotenv
+
+# Disable SSL verification globally before any other imports
+ssl._create_default_https_context = ssl._create_unverified_context
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+os.environ['SSL_VERIFY'] = 'false'
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+
 from langgraph.graph import StateGraph, END
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from qdrant_client import QdrantClient
@@ -12,7 +23,7 @@ from langchain.schema import Document
 from workflow_state import WorkflowState, create_initial_state
 from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent # type: ignore
 from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
-from observability import observability
+from core.observability import observability, traceable, get_traceable_config
 from logging_config import configure_logging, get_logger
 from sentence_transformers import SentenceTransformer
 
@@ -66,11 +77,24 @@ class MultiAgentRAGWorkflow:
             )
             
             # Initialize embeddings
-            # model_name ='all-MiniLM-L6-v2'
-            # self.embeddings =SentenceTransformer(model_name)
+            # Use SentenceTransformer directly with SSL bypass
+            import sentence_transformers
+            import requests
+            
+            # Patch requests session to disable SSL verification
+            original_request = requests.Session.request
+            def patched_request(self, method, url, **kwargs):
+                kwargs.setdefault('verify', False)
+                return original_request(self, method, url, **kwargs)
+            requests.Session.request = patched_request
+            
             self.embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'}
+                model_kwargs={
+                    'device': 'cpu', 
+                    'trust_remote_code': True
+                },
+                encode_kwargs={'normalize_embeddings': True}
             )
         
             # self.embeddings = AzureOpenAIEmbeddings(
@@ -246,48 +270,44 @@ class MultiAgentRAGWorkflow:
     def orchestrator_node(self, state: WorkflowState) -> WorkflowState:
         """
         Orchestrator agent node - Simple routing decision
-        Measures performance and logs routing decisions
+        Logs routing decisions
         """
-        with observability.measure_agent_performance("orch", cast(Dict[str, Any], state)):
-            result = self.orchestrator.route_query(state)
-            return result
+        result = self.orchestrator.route_query(state)
+        return result
     
     def vector_rag_node(self, state: WorkflowState) -> WorkflowState:
         """
         Vector RAG agent node - Simple semantic search
         Performs search using Qdrant vector database
         """
-        with observability.measure_agent_performance("vec", cast(Dict[str, Any], state)):
-            result = self.vector_rag.retrieve_documents(state)
-            return result
+        result = self.vector_rag.retrieve_documents(state)
+        return result
     
     def graph_rag_node(self, state: WorkflowState) -> WorkflowState:
         """
         Graph RAG agent node - Simple graph queries
         Performs knowledge graph queries using Neo4j
         """
-        with observability.measure_agent_performance("graph", cast(Dict[str, Any], state)):
-            result = self.graph_rag.extract_and_query(state)
-            return result
+        result = self.graph_rag.extract_and_query(state)
+        return result
     
     def validator_node(self, state: WorkflowState) -> WorkflowState:
         """
         Validator agent node - Simple consistency checking
         Happy path: validation should generally pass
         """
-        with observability.measure_agent_performance("val", cast(Dict[str, Any], state)):
-            result = self.validator.validate_results(state)
-            return result
+        result = self.validator.validate_results(state)
+        return result
     
     def synthesizer_node(self, state: WorkflowState) -> WorkflowState:
         """
         Answer synthesis agent node - Final answer composition
         Creates comprehensive answer without citations
         """
-        with observability.measure_agent_performance("ans", cast(Dict[str, Any], state)):
-            result = self.synthesizer.synthesize_answer(state)
-            return result
+        result = self.synthesizer.synthesize_answer(state)
+        return result
     
+    @traceable(**get_traceable_config("workflow_execution"))
     def run(self, query: str) -> str:
         """
         Main method to run the workflow with a query
@@ -302,7 +322,7 @@ class MultiAgentRAGWorkflow:
             # Create initial state
             initial_state = create_initial_state(query)
             
-            logger.info("workflow_started", query=query)
+            logger.info("workflow_started", query_length=len(query), session_id=initial_state.get("session_id", "unknown"))
             
             # Run the workflow
             result = self.workflow.invoke(initial_state)

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, cast
+from typing import List, Dict, Any, Optional
 import re
 from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
@@ -8,7 +8,7 @@ from langchain.retrievers import BM25Retriever
 from pydantic.v1 import BaseModel, Field
 from qdrant_client import QdrantClient
 from workflow_state import WorkflowState
-from observability import observability
+from core.observability import observability, traceable, get_traceable_config
 from logging_config import get_logger
 from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
 logger = get_logger("agents")
@@ -73,6 +73,7 @@ class HybridSearchResult(BaseModel):
 
 # Called by: OrchestratorAgent
 @tool
+@traceable(**get_traceable_config("OrchestratorAgent"))
 def validate_medical_relevance(query: str, llm) -> QueryValidation:
     """
     Simple validation to check if query is medical/healthcare related using LLM.
@@ -193,6 +194,7 @@ MEDICAL or NON_MEDICAL
 
 # Called by: OrchestratorAgent
 @tool
+@traceable(**get_traceable_config("OrchestratorAgent"))
 def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnalysis:
     """
     Dynamic query analysis using LLM for better intent classification.
@@ -285,6 +287,7 @@ REASONING: [Brief explanation focusing on entities and relationships detected]
 
 # Called by: GraphRAGAgent
 @tool
+@traceable(**get_traceable_config("GraphRAGAgent"))
 def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     """
     Extract entities, relationships, and concepts from medical query.
@@ -367,6 +370,7 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
 
 # Called by: GraphRAGAgent
 @tool
+@traceable(**get_traceable_config("GraphRAGAgent"))
 def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_query: str = "") -> GraphQueryResult:
     """
     Execute adaptive Cypher queries using Vector DB principles: truly dynamic, self-adapting.
@@ -640,6 +644,7 @@ def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
 
 # Called by: VectorRAGAgent
 @tool
+@traceable(**get_traceable_config("VectorRAGAgent"))
 def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=None, 
                          llm=None, collection_name: str = "documents", 
                          limit: int = 10, score_threshold: float = 0.3) -> HybridSearchResult:
@@ -822,6 +827,7 @@ def _calculate_keyword_relevance(query: str, content: str) -> float:
 
 # Called by: VectorRAGAgent
 @tool
+@traceable(**get_traceable_config("VectorRAGAgent"))
 def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], llm) -> RerankedResult:
     """
     Rerank documents using LLM for better relevance ordering.
@@ -869,6 +875,7 @@ def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], l
 
 # Called by: OrchestratorAgent
 @tool
+@traceable(**get_traceable_config("OrchestratorAgent"))
 def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     """
     Mutually exclusive routing logic based on intent and entities.
@@ -944,70 +951,70 @@ class OrchestratorAgent(SecureAgentBase):
         self.llm = llm
         logger.info("orchestrator_agent_initialized", has_llm=self.llm is not None)
     
+    @traceable(**get_traceable_config("OrchestratorAgent"))
     def route_query(self, state: WorkflowState) -> WorkflowState:
         """Route the query with medical validation using function calling approach"""
         
-        with observability.measure_agent_performance("orch", cast(Dict[str, Any], state)):
-            try:
-                query = state["query"]
-                
-                # Step 1: Validate if query is medical/healthcare related
-                validation_result = self.invoke_tool("validate_medical_relevance", {
-                    "query": query,
-                    "llm": self.llm
-                })
-                
-                # Handle non-medical queries immediately
-                if not validation_result.is_medical:
-                    state["route"] = "none"
-                    state["routing_analysis"] = "Non-medical query detected"
-                    state["final_answer"] = validation_result.quick_response
-                    
-                    logger.info(
-                        "orchestrator_non_medical_query",
-                        query_length=len(query),
-                        trace_id=state.get('trace_id')
-                    )
-                    
-                    return state
-                
-                # Step 2: For medical queries, analyze characteristics and route
-                analysis_result = self.invoke_tool("analyze_query_characteristics", {
-                    "query": query,
-                    "llm": self.llm
-                })
-                
-                # Determine optimal route based on analysis
-                routing_result = self.invoke_tool("determine_optimal_route", {"analysis": analysis_result})
-                
-                # Extract routing information
-                route = routing_result.route
-                reasoning = routing_result.reasoning
-                
-                # Create analysis summary
-                analysis = f"Intent: {analysis_result.intent}, Entities: {analysis_result.entity_count}, Relationships: {analysis_result.has_relationships}"
-                
-                # Update state with routing information
-                state["route"] = route
-                state["routing_analysis"] = analysis
+        try:
+            query = state["query"]
+            
+            # Step 1: Validate if query is medical/healthcare related
+            validation_result = self.invoke_tool("validate_medical_relevance", {
+                "query": query,
+                "llm": self.llm
+            })
+            
+            # Handle non-medical queries immediately
+            if not validation_result.is_medical:
+                state["route"] = "none"
+                state["routing_analysis"] = "Non-medical query detected"
+                state["final_answer"] = validation_result.quick_response
                 
                 logger.info(
-                    "orchestrator_medical_routing",
-                    route=route,
-                    reasoning=reasoning,
-                    analysis=analysis,
+                    "orchestrator_non_medical_query",
                     query_length=len(query),
                     trace_id=state.get('trace_id')
                 )
                 
                 return state
-                
-            except Exception as e:
-                logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
-                # Re-raise the exception since orchestrator should always return a valid route
-                raise
+            
+            # Step 2: For medical queries, analyze characteristics and route
+            analysis_result = self.invoke_tool("analyze_query_characteristics", {
+                "query": query,
+                "llm": self.llm
+            })
+            
+            # Determine optimal route based on analysis
+            routing_result = self.invoke_tool("determine_optimal_route", {"analysis": analysis_result})
+            
+            # Extract routing information
+            route = routing_result.route
+            reasoning = routing_result.reasoning
+            
+            # Create analysis summary
+            analysis = f"Intent: {analysis_result.intent}, Entities: {analysis_result.entity_count}, Relationships: {analysis_result.has_relationships}"
+            
+            # Update state with routing information
+            state["route"] = route
+            state["routing_analysis"] = analysis
+            
+            logger.info(
+                "orchestrator_medical_routing",
+                route=route,
+                reasoning=reasoning,
+                analysis=analysis,
+                query_length=len(query),
+                trace_id=state.get('trace_id')
+            )
+            
+            return state
+            
+        except Exception as e:
+            logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
+            errors = state.get("errors") or []
+            state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
+            # Re-raise the exception since orchestrator should always return a valid route
+            raise
     
     def get_workflow_routing(self, state: WorkflowState) -> str:
         """
@@ -1066,64 +1073,64 @@ class VectorRAGAgent(SecureAgentBase):
         self.llm = llm
         self.bm25_retriever = bm25_retriever
     
+    @traceable(**get_traceable_config("VectorRAGAgent"))
     def retrieve_documents(self, state: WorkflowState) -> WorkflowState:
         """Retrieve documents using hybrid search function calling approach"""
         
-        with observability.measure_agent_performance("vec", cast(Dict[str, Any], state)):
-            try:
-                query = state["query"]
-                
-                # Step 1: Perform hybrid search (vector + BM25) using tool
-                search_result = self.invoke_tool("perform_hybrid_search", {
+        try:
+            query = state["query"]
+            
+            # Step 1: Perform hybrid search (vector + BM25) using tool
+            search_result = self.invoke_tool("perform_hybrid_search", {
+                "query": query,
+                "qdrant_client": self.qdrant_client,
+                "embeddings": self.embeddings,
+                "bm25_retriever": self.bm25_retriever,
+                "llm": self.llm,
+                "collection_name": self.collection_name,
+                "limit": 10                   
+            })
+            
+            documents = search_result.documents
+            search_strategy = search_result.search_strategy
+            vector_count = search_result.vector_count
+            bm25_count = search_result.bm25_count
+            precision_score = search_result.precision_score
+            
+            # Step 2: Optional additional reranking if LLM available and enough documents
+            reranking_applied = False
+            if self.llm and len(documents) > 3:
+                # Only do additional reranking if we haven't already done hybrid scoring                    
+                rerank_result = self.invoke_tool("rerank_documents_by_relevance", {
                     "query": query,
-                    "qdrant_client": self.qdrant_client,
-                    "embeddings": self.embeddings,
-                    "bm25_retriever": self.bm25_retriever,
-                    "llm": self.llm,
-                    "collection_name": self.collection_name,
-                    "limit": 10                   
+                    "documents": documents,
+                    "llm": self.llm
                 })
-                
-                documents = search_result.documents
-                search_strategy = search_result.search_strategy
-                vector_count = search_result.vector_count
-                bm25_count = search_result.bm25_count
-                precision_score = search_result.precision_score
-                
-                # Step 2: Optional additional reranking if LLM available and enough documents
-                reranking_applied = False
-                if self.llm and len(documents) > 3:
-                    # Only do additional reranking if we haven't already done hybrid scoring                    
-                    rerank_result = self.invoke_tool("rerank_documents_by_relevance", {
-                        "query": query,
-                        "documents": documents,
-                        "llm": self.llm
-                    })
-                    documents = rerank_result.documents
-                    reranking_applied = rerank_result.reranking_applied
-                
-                # Update state
-                state["vector_docs"] = documents
-                
-                logger.info(
-                    "hybrid_retrieval_function_calling",
-                    documents_retrieved=len(documents),
-                    search_strategy=search_strategy,
-                    vector_count=vector_count,
-                    bm25_count=bm25_count,
-                    precision_score=precision_score,
-                    reranking_applied=reranking_applied,
-                    trace_id=state.get('trace_id')
-                )
-                
-                return state
-                
-            except Exception as e:
-                logger.error("hybrid_rag_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Hybrid RAG error: {str(e)}"]
-                state["vector_docs"] = []
-                return state
+                documents = rerank_result.documents
+                reranking_applied = rerank_result.reranking_applied
+            
+            # Update state
+            state["vector_docs"] = documents
+            
+            logger.info(
+                "hybrid_retrieval_function_calling",
+                documents_retrieved=len(documents),
+                search_strategy=search_strategy,
+                vector_count=vector_count,
+                bm25_count=bm25_count,
+                precision_score=precision_score,
+                reranking_applied=reranking_applied,
+                trace_id=state.get('trace_id')
+            )
+            
+            return state
+            
+        except Exception as e:
+            logger.error("hybrid_rag_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
+            errors = state.get("errors") or []
+            state["errors"] = errors + [f"Hybrid RAG error: {str(e)}"]
+            state["vector_docs"] = []
+            return state
 
 
 class GraphRAGAgent(SecureAgentBase):
@@ -1139,47 +1146,47 @@ class GraphRAGAgent(SecureAgentBase):
         self.driver = neo4j_driver
         self.llm = llm
     
+    @traceable(**get_traceable_config("GraphRAGAgent"))
     def extract_and_query(self, state: WorkflowState) -> WorkflowState:
         """Extract entities and query knowledge graph using function calling approach"""
         
-        with observability.measure_agent_performance("graph", cast(Dict[str, Any], state)):
-            try:
-                query = state["query"]
-                
-                # Step 1: Extract entities, relationships, and concepts
-                extraction_result = self.invoke_tool("extract_entities_from_query", {
-                    "query": query,
-                    "llm": self.llm
-                })
-                
-                # Step 2: Execute graph queries based on extraction
-                graph_result = self.invoke_tool("execute_graph_queries", {
-                    "extraction": extraction_result,
-                    "neo4j_driver": self.driver
-                })
-                
-                # Update state
-                state["graph_triples"] = graph_result.triples
-                
-                logger.info(
-                    "graph_retrieval_function_calling",
-                    entities_found=len(extraction_result.entities),
-                    relationships_found=len(extraction_result.relationships),
-                    concepts_found=len(extraction_result.concepts),
-                    scenario_used=extraction_result.scenario,
-                    queries_executed=graph_result.queries_executed,
-                    triples_retrieved=len(graph_result.triples),
-                    trace_id=state.get('trace_id')
-                )
-                
-                return state
-                
-            except Exception as e:
-                logger.error("graph_rag_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                errors = state.get("errors") or []
-                state["errors"] = errors + [f"Graph RAG error: {str(e)}"]
-                state["graph_triples"] = []
-                return state
+        try:
+            query = state["query"]
+            
+            # Step 1: Extract entities, relationships, and concepts
+            extraction_result = self.invoke_tool("extract_entities_from_query", {
+                "query": query,
+                "llm": self.llm
+            })
+            
+            # Step 2: Execute graph queries based on extraction
+            graph_result = self.invoke_tool("execute_graph_queries", {
+                "extraction": extraction_result,
+                "neo4j_driver": self.driver
+            })
+            
+            # Update state
+            state["graph_triples"] = graph_result.triples
+            
+            logger.info(
+                "graph_retrieval_function_calling",
+                entities_found=len(extraction_result.entities),
+                relationships_found=len(extraction_result.relationships),
+                concepts_found=len(extraction_result.concepts),
+                scenario_used=extraction_result.scenario,
+                queries_executed=graph_result.queries_executed,
+                triples_retrieved=len(graph_result.triples),
+                trace_id=state.get('trace_id')
+            )
+            
+            return state
+            
+        except Exception as e:
+            logger.error("graph_rag_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
+            errors = state.get("errors") or []
+            state["errors"] = errors + [f"Graph RAG error: {str(e)}"]
+            state["graph_triples"] = []
+            return state
 
 # Register all tools with access control
 def register_agent_tools():

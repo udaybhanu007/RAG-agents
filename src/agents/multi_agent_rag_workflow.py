@@ -282,7 +282,7 @@ class MultiAgentRAGWorkflow:
         # Compile the workflow
         self.workflow = workflow.compile()
         
-        logger.info("simple_workflow_compiled_happy_path_only")
+        logger.info("simple_workflow_compiled")
     
     
     def orchestrator_node(self, state: WorkflowState) -> WorkflowState:

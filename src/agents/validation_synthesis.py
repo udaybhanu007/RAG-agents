@@ -40,7 +40,14 @@ def validate_vector_relevance(query: str, vector_docs: List[Dict[str, Any]]) -> 
     Returns:
         RelevanceValidation with relevance assessment
     """
+    logger.info("validate_vector_relevance_started", 
+               query_length=len(query), 
+               documents_count=len(vector_docs))
+    
     if not vector_docs:
+        logger.info("validate_vector_relevance_completed", 
+                   is_relevant=False, 
+                   reason="no_documents")
         return RelevanceValidation(
             is_relevant=False,
             relevance_score=0.0,
@@ -74,6 +81,12 @@ def validate_vector_relevance(query: str, vector_docs: List[Dict[str, Any]]) -> 
     
     reasoning = f"Avg similarity: {avg_score:.2f}, Matches: {len(key_matches)}"
     
+    logger.info("validate_vector_relevance_completed",
+               is_relevant=is_relevant,
+               relevance_score=relevance_score,
+               key_matches_count=len(key_matches),
+               avg_score=avg_score)
+    
     return RelevanceValidation(
         is_relevant=is_relevant,
         relevance_score=relevance_score,
@@ -96,7 +109,14 @@ def validate_graph_relevance(query: str, graph_triples: List[Dict[str, Any]]) ->
     Returns:
         RelevanceValidation with relevance assessment
     """
+    logger.info("validate_graph_relevance_started",
+               query_length=len(query),
+               triples_count=len(graph_triples))
+    
     if not graph_triples:
+        logger.info("validate_graph_relevance_completed",
+                   is_relevant=False,
+                   reason="no_triples")
         return RelevanceValidation(
             is_relevant=False,
             relevance_score=0.0,
@@ -128,6 +148,12 @@ def validate_graph_relevance(query: str, graph_triples: List[Dict[str, Any]]) ->
     
     reasoning = f"Entities found: {len(key_matches)}, Coverage: {match_coverage:.2f}"
     
+    logger.info("validate_graph_relevance_completed",
+               is_relevant=is_relevant,
+               relevance_score=relevance_score,
+               key_matches_count=len(key_matches),
+               match_coverage=match_coverage)
+    
     return RelevanceValidation(
         is_relevant=is_relevant,
         relevance_score=relevance_score,
@@ -153,7 +179,15 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
     Returns:
         SynthesisResult with synthesized answer
     """
+    logger.info("synthesize_answer_from_sources_started",
+               query_length=len(query),
+               vector_docs_count=len(vector_docs),
+               graph_triples_count=len(graph_triples))
+    
     if not vector_docs and not graph_triples:
+        logger.info("synthesize_answer_from_sources_completed",
+                   answer_length=0,
+                   reason="no_sources")
         return SynthesisResult(
             answer="I don't have enough information to answer this query."
         )
@@ -201,14 +235,25 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
         response = llm.invoke(synthesis_prompt)
         answer = response.content.strip()
         
+        final_answer = answer if answer else "Unable to synthesize answer from available sources"
+        
+        logger.info("synthesize_answer_from_sources_completed",
+                   answer_length=len(final_answer),
+                   synthesis_successful=bool(answer))
+        
         return SynthesisResult(
-            answer=answer if answer else "Unable to synthesize answer from available sources"
+            answer=final_answer
         )
         
     except Exception as e:
-        logger.warning("synthesis_failed", error=str(e))
+        logger.warning("answer_synthesis_failed", error=str(e))
+        fallback_answer = f"Error during synthesis: {str(e)}"
+        logger.info("synthesize_answer_from_sources_completed",
+                   answer_length=len(fallback_answer),
+                   synthesis_successful=False,
+                   error=str(e))
         return SynthesisResult(
-            answer=f"Error during synthesis: {str(e)}"
+            answer=fallback_answer
         )
 
 
@@ -223,15 +268,25 @@ class ValidatorAgent:
     def __init__(self, llm: Optional[AzureChatOpenAI] = None):
         # LLM not required for basic validation - using rule-based tools
         self.llm = llm
+        logger.info("validator_agent_initialized", has_llm=llm is not None)
     
     @traceable(**get_traceable_config("ValidatorAgent"))
     def validate_results(self, state: WorkflowState) -> WorkflowState:
         """Validate search results using function calling approach"""
         
+        trace_id = state.get('trace_id')
+        logger.info("validator_validate_results_started", trace_id=trace_id)
+        
         try:
             query = state["query"]
             vector_docs = state.get("vector_docs", [])
             graph_triples = state.get("graph_triples", [])
+            
+            logger.info("validator_processing_results",
+                       query_length=len(query),
+                       vector_docs_count=len(vector_docs),
+                       graph_triples_count=len(graph_triples),
+                       trace_id=trace_id)
             
             # Step 1: Validate vector search relevance
             vector_validation = validate_vector_relevance.invoke({
@@ -284,7 +339,7 @@ class ValidatorAgent:
             state["validation_result"] = validation_result
             
             logger.info(
-                "validation_function_calling",
+                "validator_validate_results_completed",
                 passed=overall_passed,
                 confidence=overall_confidence,
                 vector_relevant=vector_validation.is_relevant if vector_docs else None,
@@ -292,13 +347,13 @@ class ValidatorAgent:
                 #graph_relevant=graph_validation.is_relevant if graph_triples else None,
                    # uncomment later#######################################
                 errors_count=len(errors),
-                trace_id=state.get('trace_id')
+                trace_id=trace_id
             )
             
             return state
             
         except Exception as e:
-            logger.error("validator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
+            logger.error("validator_validate_results_error", error=str(e), trace_id=trace_id)
             # Safe fallback - pass validation to avoid blocking workflow
             validation_result = ValidationResult(
                 passed=True,
@@ -323,27 +378,47 @@ class AnswerSynthesisAgent(SecureAgentBase):
     def __init__(self, llm: AzureChatOpenAI):
         super().__init__(AgentRole.SYNTHESIZER)
         self.llm = llm
+        logger.info("answer_synthesis_agent_initialized", has_llm=llm is not None)
     
     @traceable(**get_traceable_config("AnswerSynthesisAgent"))
     def synthesize_answer(self, state: WorkflowState) -> WorkflowState:
         """Synthesize final answer using function calling approach"""
         
+        trace_id = state.get('trace_id')
+        logger.info("answer_synthesis_synthesize_answer_started", trace_id=trace_id)
+        
         try:
             query = state["query"]
             vector_docs = state.get("vector_docs", [])
             graph_triples = state.get("graph_triples", [])
+            
+            logger.info("answer_synthesis_processing_sources",
+                       query_length=len(query),
+                       vector_docs_count=len(vector_docs),
+                       graph_triples_count=len(graph_triples),
+                       trace_id=trace_id)
             validation_passed = state.get("validation_passed", True)
             
             # Only synthesize if validation passed
             if not validation_passed:
-                state["answer"] = "Unable to provide a reliable answer due to validation concerns with the retrieved information."
+                no_validation_answer = "Unable to provide a reliable answer due to validation concerns with the retrieved information."
+                state["answer"] = no_validation_answer
                 state["status"] = "completed_with_validation_issues"
+                logger.info("answer_synthesis_synthesize_answer_completed",
+                           answer_length=len(no_validation_answer),
+                           status="validation_failed",
+                           trace_id=trace_id)
                 return state
             
             # Check if we have any data to synthesize
             if not vector_docs and not graph_triples:
-                state["answer"] = "I don't have enough information to answer this query based on the available data sources."
+                no_data_answer = "I don't have enough information to answer this query based on the available data sources."
+                state["answer"] = no_data_answer
                 state["status"] = "completed_no_data"
+                logger.info("answer_synthesis_synthesize_answer_completed",
+                           answer_length=len(no_data_answer),
+                           status="no_data",
+                           trace_id=trace_id)
                 return state
             
             # Synthesize answer from sources using tool
@@ -359,23 +434,31 @@ class AnswerSynthesisAgent(SecureAgentBase):
             state["status"] = "completed"
             
             logger.info(
-                "answer_synthesis_function_calling",
+                "answer_synthesis_synthesize_answer_completed",
                 answer_length=len(synthesis_result.answer),
-                trace_id=state.get('trace_id')
+                status="completed",
+                trace_id=trace_id
             )
             
             return state
             
         except Exception as e:
-            logger.error("synthesis_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-            state["answer"] = f"I encountered an error while synthesizing the answer: {str(e)}"
+            logger.error("answer_synthesis_synthesize_answer_error", error=str(e), trace_id=trace_id)
+            error_answer = f"I encountered an error while synthesizing the answer: {str(e)}"
+            state["answer"] = error_answer
             state["status"] = "failed"
             errors = state.get("errors") or []
             state["errors"] = errors + [f"Synthesis error: {str(e)}"]
+            logger.info("answer_synthesis_synthesize_answer_completed",
+                       answer_length=len(error_answer),
+                       status="failed",
+                       trace_id=trace_id)
             return state
 
 def register_validation_synthesis_tools():
     """Register validation and synthesis tools with their allowed agent roles"""
+    
+    logger.info("register_validation_synthesis_tools_started")
     
     # Validator tools
     tool_registry.register_tool(
@@ -392,6 +475,13 @@ def register_validation_synthesis_tools():
         synthesize_answer_from_sources,
         ToolMetadata("synthesize_answer_from_sources", [AgentRole.SYNTHESIZER])
     )
+    
+    logger.info("register_validation_synthesis_tools_completed",
+               validator_tools=2,
+               synthesizer_tools=1,
+               total_tools=3)
 
 # Initialize tool registry for validation and synthesis
+logger.info("initializing_validation_synthesis_tools")
 register_validation_synthesis_tools()
+logger.info("validation_synthesis_tools_initialization_completed")

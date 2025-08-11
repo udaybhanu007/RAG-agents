@@ -33,7 +33,6 @@ class VectorSearchResult(BaseModel):
     """Vector search result with document information"""
     documents: List[Dict[str, Any]] = Field(description="Retrieved documents with scores")
     total_found: int = Field(description="Total number of documents found")
-    precision_score: Optional[float] = Field(description="Retrieval precision if relevance labels available")
 
 
 class RerankedResult(BaseModel):
@@ -68,7 +67,6 @@ class HybridSearchResult(BaseModel):
     bm25_count: int = Field(description="Number of documents from BM25 search")
     total_found: int = Field(description="Total unique documents after merging")
     search_strategy: str = Field(description="Strategy used: vector_only, bm25_only, or hybrid")
-    precision_score: Optional[float] = Field(description="Hybrid precision score")
 
 
 # Called by: OrchestratorAgent
@@ -85,6 +83,7 @@ def validate_medical_relevance(query: str, llm) -> QueryValidation:
     Returns:
         QueryValidation with medical relevance assessment
     """
+    logger.info("validate_medical_relevance_started", query_length=len(query))
     
     validation_prompt = """
 You are a medical query classifier. Determine if this query is medical/healthcare related.
@@ -178,6 +177,11 @@ MEDICAL or NON_MEDICAL
         if not is_medical:
             quick_response = "I'm a medical knowledge assistant specialized in healthcare topics. Please ask me questions about medical conditions, treatments, symptoms, medical databases, healthcare technology, or other healthcare-related matters."
         
+        logger.info("validate_medical_relevance_completed", 
+                   is_medical=is_medical, 
+                   has_quick_response=quick_response is not None,
+                   query_length=len(query))
+        
         return QueryValidation(
             is_medical=is_medical,
             quick_response=quick_response
@@ -186,6 +190,9 @@ MEDICAL or NON_MEDICAL
     except Exception as e:
         logger.warning("llm_validation_failed", error=str(e))
         # Conservative fallback - assume medical to avoid blocking valid queries
+        logger.info("validate_medical_relevance_fallback", 
+                   fallback_result=True, 
+                   reason="llm_failure")
         return QueryValidation(
             is_medical=True,
             quick_response=None
@@ -206,6 +213,7 @@ def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnal
     Returns:
         QueryAnalysis with intent, entity count, and relationship detection
     """
+    logger.info("analyze_query_characteristics_started", query_length=len(query))
     
     analysis_prompt = """
 Analyze this medical query and classify its characteristics:
@@ -269,6 +277,12 @@ REASONING: [Brief explanation focusing on entities and relationships detected]
                 rel_value = line.split('HAS_RELATIONSHIPS:')[1].strip().lower()
                 has_relationships = rel_value == 'true'
         
+        logger.info("analyze_query_characteristics_completed",
+                   intent=intent,
+                   entity_count=entity_count,
+                   has_relationships=has_relationships,
+                   query_length=len(query))
+        
         return QueryAnalysis(
             intent=intent,
             entity_count=entity_count,
@@ -278,6 +292,10 @@ REASONING: [Brief explanation focusing on entities and relationships detected]
     except Exception as e:
         logger.warning("llm_analysis_failed", error=str(e), query=query[:100])
         # Conservative fallback with basic defaults
+        logger.info("analyze_query_characteristics_fallback",
+                   fallback_intent="FACTUAL",
+                   fallback_entity_count=1,
+                   fallback_has_relationships=False)
         return QueryAnalysis(
             intent="FACTUAL",
             entity_count=1,
@@ -299,6 +317,7 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     Returns:
         EntityExtraction with structured results
     """
+    logger.info("extract_entities_from_query_started", query_length=len(query))
     extraction_prompt = """
     Extract medical entities, relationships, and concepts from this query.
 
@@ -359,6 +378,13 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
         scenario = "SINGLE_ENTITY_NO_RELATIONSHIPS"
     else:
         scenario = "CONCEPTS_ONLY"
+    
+    logger.info("extract_entities_from_query_completed",
+               entities_count=len(entities),
+               relationships_count=len(relationships),
+               concepts_count=len(concepts),
+               scenario=scenario,
+               query_length=len(query))
     
     return EntityExtraction(
         entities=entities,
@@ -647,7 +673,7 @@ def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
 @traceable(**get_traceable_config("VectorRAGAgent"))
 def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=None, 
                          llm=None, collection_name: str = "documents", 
-                         limit: int = 10, score_threshold: float = 0.3) -> HybridSearchResult:
+                         limit: int = 10) -> HybridSearchResult:
     """
     Perform hybrid search combining vector similarity and BM25 keyword search.
     
@@ -659,47 +685,51 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
         llm: LLM instance for relevance assessment (optional)
         collection_name: Name of the Qdrant collection
         limit: Maximum number of documents to retrieve
-        score_threshold: Minimum similarity score threshold
         
     Returns:
         HybridSearchResult with combined documents
     """
+    logger.info("perform_hybrid_search_started", 
+               query_length=len(query),
+               limit=limit,
+               has_bm25_retriever=bm25_retriever is not None)
     vector_docs = []
     bm25_docs = []
     
     # Step 1: Vector search
     try:
+        logger.info("vector_search_starting", collection_name=collection_name)
         query_embedding = embeddings.embed_query(query)
         vector_results = qdrant_client.search(
             collection_name=collection_name,
             query_vector=query_embedding,
             limit=min(limit * 2, 20),  # Get more for better filtering
-            score_threshold=max(score_threshold - 0.1, 0.1),  # Slightly lower threshold
             with_payload=True,
             with_vectors=False
         )
         
         for result in vector_results:
-            if result.score >= score_threshold:  # Apply final threshold
-                # Extract metadata directly from payload since it's not nested
-                metadata = {
-                    "file_path": result.payload.get("file_path", ""),
-                    "created_date": result.payload.get("created_date", ""),
-                }
-                # Include any additional payload items that aren't chunk or the metadata fields
-                for key, value in result.payload.items():
-                    if key not in ["chunk", "file_path", "created_date"]:
-                        metadata[key] = value
-                
-                doc = {
-                    "id": f"vec_{result.id}",
-                    "content": result.payload.get("chunk", ""),
-                    "metadata": metadata,
-                    "score": float(result.score),
-                    "source": "vector_search",
-                    "search_type": "vector"
-                }
-                vector_docs.append(doc)
+            # Extract metadata directly from payload since it's not nested
+            metadata = {
+                "file_path": result.payload.get("file_path", ""),
+                "created_date": result.payload.get("created_date", ""),
+            }
+            # Include any additional payload items that aren't chunk or the metadata fields
+            for key, value in result.payload.items():
+                if key not in ["chunk", "file_path", "created_date"]:
+                    metadata[key] = value
+            
+            doc = {
+                "id": f"vec_{result.id}",
+                "content": result.payload.get("chunk", ""),
+                "metadata": metadata,
+                "score": float(result.score),
+                "source": "vector_search",
+                "search_type": "vector"
+            }
+            vector_docs.append(doc)
+        
+        logger.info("vector_search_completed", documents_found=len(vector_docs))
                 
     except Exception as e:
         logger.warning("vector_search_failed", error=str(e))
@@ -707,36 +737,34 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
     # Step 2: BM25 keyword search (if available)
     if bm25_retriever:
         try:
+            logger.info("bm25_search_starting")
             bm25_results = bm25_retriever.get_relevant_documents(query)
             
             for i, doc in enumerate(bm25_results[:limit]):
-                # Calculate keyword relevance score
-                keyword_score = _calculate_keyword_relevance(query, doc.page_content)
+                # Use simple rank-based scoring for BM25 results
+                rank_score = max(0.0, 1.0 - (i / max(len(bm25_results), 1)))
                 
                 bm25_doc = {
                     "id": f"bm25_{i}",
                     "content": doc.page_content,
                     "metadata": doc.metadata,
-                    "score": keyword_score,
+                    "score": rank_score,
                     "source": "keyword_search",
                     "search_type": "bm25"
                 }
                 bm25_docs.append(bm25_doc)
+            
+            logger.info("bm25_search_completed", documents_found=len(bm25_docs))
                 
         except Exception as e:
             logger.warning("bm25_search_failed", error=str(e))
     
     # Step 3: Merge and deduplicate results with adaptive weighting
+    logger.info("merging_search_results", vector_docs=len(vector_docs), bm25_docs=len(bm25_docs))
     combined_docs = _merge_search_results(vector_docs, bm25_docs, query)
     
     # Step 4: Limit final results
     combined_docs = combined_docs[:limit]
-    
-    # Step 5: Calculate precision score (simplified)
-    precision_score = None
-    if combined_docs:
-        high_quality_docs = [doc for doc in combined_docs if doc.get("hybrid_score", doc.get("score", 0)) >= score_threshold]
-        precision_score = len(high_quality_docs) / len(combined_docs)
     
     # Log hybrid search summary for performance tracking
     if vector_docs and bm25_docs:
@@ -746,7 +774,6 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
             vector_docs_count=len(vector_docs),
             bm25_docs_count=len(bm25_docs),
             final_docs_count=len(combined_docs),
-            precision_score=precision_score,
             strategy="hybrid"
         )
     elif vector_docs:
@@ -764,13 +791,16 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
     else:
         strategy = "no_results"
     
+    logger.info("perform_hybrid_search_completed",
+               final_documents_count=len(combined_docs),
+               strategy=strategy)
+    
     return HybridSearchResult(
         documents=combined_docs,
         vector_count=len(vector_docs),
         bm25_count=len(bm25_docs),
         total_found=len(combined_docs),
-        search_strategy=strategy,
-        precision_score=precision_score
+        search_strategy=strategy
     )
 
 
@@ -785,13 +815,13 @@ def _merge_search_results(vector_docs: List[Dict], bm25_docs: List[Dict], query:
     vector_weight = 0.5
     bm25_weight = 0.5
     
-    def content_signature(content: str) -> str:
-        """Create content signature for deduplication"""
+    def create_deduplication_hash(content: str) -> str:
+        """Create content hash for deduplication"""
         return re.sub(r'\W+', ' ', content.lower()).strip()[:100]
     
     # Process vector docs
     for doc in vector_docs:
-        sig = content_signature(doc["content"])
+        sig = create_deduplication_hash(doc["content"])
         if sig not in seen_content:
             doc["hybrid_score"] = doc["score"] * vector_weight
             doc["source_primary"] = "vector"
@@ -800,7 +830,7 @@ def _merge_search_results(vector_docs: List[Dict], bm25_docs: List[Dict], query:
     
     # Process BM25 docs, avoiding duplicates
     for i, doc in enumerate(bm25_docs):
-        sig = content_signature(doc["content"])
+        sig = create_deduplication_hash(doc["content"])
         if sig not in seen_content:
             # Simple rank-based scoring
             rank_score = max(0.0, 1.0 - (i / max(len(bm25_docs), 1)))
@@ -813,17 +843,6 @@ def _merge_search_results(vector_docs: List[Dict], bm25_docs: List[Dict], query:
     merged_docs.sort(key=lambda x: x["hybrid_score"], reverse=True)
     return merged_docs
 
-
-def _calculate_keyword_relevance(query: str, content: str) -> float:
-    """Calculate simple keyword overlap score"""
-    query_words = set(query.lower().split())
-    content_words = set(content.lower().split())
-    
-    if not query_words:
-        return 0.0
-    
-    overlap = len(query_words.intersection(content_words))
-    return min(overlap / len(query_words), 1.0)
 
 # Called by: VectorRAGAgent
 @tool
@@ -840,7 +859,12 @@ def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], l
     Returns:
         RerankedResult with reordered documents
     """
+    logger.info("rerank_documents_started", 
+               query_length=len(query),
+               documents_count=len(documents))
+    
     if not documents or len(documents) <= 1:
+        logger.info("rerank_documents_skipped", reason="insufficient_documents")
         return RerankedResult(documents=documents, reranking_applied=False)
     
     try:
@@ -864,12 +888,14 @@ def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], l
         # Validate and reorder
         if len(rankings) == len(documents) and all(0 <= r < len(documents) for r in rankings):
             reranked_docs = [documents[i] for i in rankings]
+            logger.info("rerank_documents_completed", reranking_applied=True)
             return RerankedResult(documents=reranked_docs, reranking_applied=True)
         
     except Exception as e:
         logger.warning("reranking_failed", error=str(e))
     
     # Return original order if reranking fails
+    logger.info("rerank_documents_completed", reranking_applied=False, reason="reranking_failed")
     return RerankedResult(documents=documents, reranking_applied=False)
 
 
@@ -887,11 +913,13 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     Returns:
         RoutingDecision with route and reasoning
     """
-    # Mutually exclusive routing rules (ordered by priority)
-    
+    logger.info("determine_optimal_route_started",
+               intent=analysis.intent,
+               entity_count=analysis.entity_count,
+               has_relationships=analysis.has_relationships)
     # Rule 1: Analytical queries always need comprehensive search
     if analysis.intent == "ANALYTICAL":
-        return RoutingDecision(
+        decision = RoutingDecision(
             route="both",
             confidence="HIGH",
             reasoning="Analytical query requires comprehensive search"
@@ -899,7 +927,7 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     
     # Rule 2: Relational queries with multiple entities prefer graph
     elif analysis.intent == "RELATIONAL" and analysis.entity_count >= 2:
-        return RoutingDecision(
+        decision = RoutingDecision(
             route="graph",
             confidence="HIGH",
             reasoning="Relational query with multiple entities - graph optimal"
@@ -907,7 +935,7 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     
     # Rule 3: Relational queries with single entity still prefer graph
     elif analysis.intent == "RELATIONAL":
-        return RoutingDecision(
+        decision = RoutingDecision(
             route="graph",
             confidence="MEDIUM",
             reasoning="Relational query - graph preferred for relationships"
@@ -915,7 +943,7 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     
     # Rule 4: Multiple entities (3+) need comprehensive search
     elif analysis.entity_count >= 3:
-        return RoutingDecision(
+        decision = RoutingDecision(
             route="both",
             confidence="MEDIUM",
             reasoning="Multiple entities require comprehensive search"
@@ -923,7 +951,7 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     
     # Rule 5: Relationship indicators (non-relational intent) prefer graph
     elif analysis.has_relationships:
-        return RoutingDecision(
+        decision = RoutingDecision(
             route="graph",
             confidence="MEDIUM",
             reasoning="Relationship indicators detected - graph preferred"
@@ -931,11 +959,18 @@ def determine_optimal_route(analysis: QueryAnalysis) -> RoutingDecision:
     
     # Rule 6: Simple factual queries with 1-2 entities use vector
     else:
-        return RoutingDecision(
+        decision = RoutingDecision(
             route="vector",
             confidence="HIGH",
             reasoning="Simple factual query - semantic search optimal"
         )
+    
+    logger.info("determine_optimal_route_completed",
+               route=decision.route,
+               confidence=decision.confidence,
+               reasoning=decision.reasoning)
+    
+    return decision
 
 
 class OrchestratorAgent(SecureAgentBase):
@@ -955,8 +990,14 @@ class OrchestratorAgent(SecureAgentBase):
     def route_query(self, state: WorkflowState) -> WorkflowState:
         """Route the query with medical validation using function calling approach"""
         
+        trace_id = state.get('trace_id')
+        logger.info("orchestrator_route_query_started", trace_id=trace_id)
+        
         try:
             query = state["query"]
+            logger.info("orchestrator_processing_query", 
+                       query_length=len(query), 
+                       trace_id=trace_id)
             
             # Step 1: Validate if query is medical/healthcare related
             validation_result = self.invoke_tool("validate_medical_relevance", {
@@ -973,7 +1014,8 @@ class OrchestratorAgent(SecureAgentBase):
                 logger.info(
                     "orchestrator_non_medical_query",
                     query_length=len(query),
-                    trace_id=state.get('trace_id')
+                    route="none",
+                    trace_id=trace_id
                 )
                 
                 return state
@@ -999,20 +1041,20 @@ class OrchestratorAgent(SecureAgentBase):
             state["routing_analysis"] = analysis
             
             logger.info(
-                "orchestrator_medical_routing",
+                "orchestrator_medical_routing_completed",
                 route=route,
                 reasoning=reasoning,
                 analysis=analysis,
                 query_length=len(query),
-                trace_id=state.get('trace_id')
+                trace_id=trace_id
             )
             
             return state
             
         except Exception as e:
-            logger.error("orchestrator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
+            logger.error("orchestrator_route_query_error", error=str(e), trace_id=trace_id)
             errors = state.get("errors") or []
-            state["errors"] = errors + [f"Orchestrator function calling error: {str(e)}"]
+            state["errors"] = errors + [f"Orchestrator route query error: {str(e)}"]
             # Re-raise the exception since orchestrator should always return a valid route
             raise
     
@@ -1022,20 +1064,32 @@ class OrchestratorAgent(SecureAgentBase):
         This contains simple mapping logic that doesn't require tool governance.
         """
         route = state.get("route", "both")
+        trace_id = state.get('trace_id')
+        
+        logger.info("orchestrator_workflow_routing_started", 
+                   input_route=route, 
+                   trace_id=trace_id)
         
         # Simple mapping logic - no need for tool governance
         if route == "vector":
-            return "vector"
+            workflow_route = "vector"
         elif route == "graph":
-            return "graph"
+            workflow_route = "graph"
         elif route == "both":
-            return "both_vector_first"  # Start with vector, then graph
+            workflow_route = "both_vector_first"  # Start with vector, then graph
         elif route == "none":
-            return "none"  # Non-medical query - end workflow
+            workflow_route = "none"  # Non-medical query - end workflow
         else:
             # This should never happen since orchestrator always returns valid routes
-            logger.error("invalid_route_from_orchestrator", route=route)
+            logger.error("invalid_route_from_orchestrator", route=route, trace_id=trace_id)
             raise ValueError(f"Invalid route received from orchestrator: {route}")
+        
+        logger.info("orchestrator_workflow_routing_completed",
+                   input_route=route,
+                   workflow_route=workflow_route,
+                   trace_id=trace_id)
+        
+        return workflow_route
     
     def get_post_vector_routing(self, state: WorkflowState) -> str:
         """
@@ -1043,16 +1097,28 @@ class OrchestratorAgent(SecureAgentBase):
         This contains simple business logic that doesn't require tool governance.
         """
         route = state.get("route", "both")
+        trace_id = state.get('trace_id')
+        
+        logger.info("orchestrator_post_vector_routing_started",
+                   input_route=route,
+                   trace_id=trace_id)
         
         # Simple business logic - no need for tool governance
         if route == "both":
-            return "continue_to_graph"  # Continue with graph retrieval for comprehensive search
+            post_vector_route = "continue_to_graph"  # Continue with graph retrieval for comprehensive search
         elif route in ["vector", "graph", "none"]:
-            return "continue_to_validator"  # Skip graph, go directly to validation
+            post_vector_route = "continue_to_validator"  # Skip graph, go directly to validation
         else:
             # This should never happen since orchestrator always returns valid routes
-            logger.error("invalid_route_for_post_vector", route=route)
+            logger.error("invalid_route_for_post_vector_routing", route=route, trace_id=trace_id)
             raise ValueError(f"Invalid route for post-vector step: {route}")
+        
+        logger.info("orchestrator_post_vector_routing_completed",
+                   input_route=route,
+                   post_vector_route=post_vector_route,
+                   trace_id=trace_id)
+        
+        return post_vector_route
 
 
 class VectorRAGAgent(SecureAgentBase):
@@ -1072,13 +1138,25 @@ class VectorRAGAgent(SecureAgentBase):
         self.collection_name = collection_name
         self.llm = llm
         self.bm25_retriever = bm25_retriever
+        
+        logger.info("vector_rag_agent_initialized",
+                   collection_name=collection_name,
+                   has_llm=llm is not None,
+                   has_bm25_retriever=bm25_retriever is not None)
     
     @traceable(**get_traceable_config("VectorRAGAgent"))
     def retrieve_documents(self, state: WorkflowState) -> WorkflowState:
         """Retrieve documents using hybrid search function calling approach"""
         
+        trace_id = state.get('trace_id')
+        logger.info("vector_rag_retrieve_documents_started", trace_id=trace_id)
+        
         try:
             query = state["query"]
+            logger.info("vector_rag_processing_query",
+                       query_length=len(query),
+                       collection_name=self.collection_name,
+                       trace_id=trace_id)
             
             # Step 1: Perform hybrid search (vector + BM25) using tool
             search_result = self.invoke_tool("perform_hybrid_search", {
@@ -1100,6 +1178,7 @@ class VectorRAGAgent(SecureAgentBase):
             # Step 2: Optional additional reranking if LLM available and enough documents
             reranking_applied = False
             if self.llm and len(documents) > 3:
+                logger.info("vector_rag_applying_reranking", documents_count=len(documents))
                 # Only do additional reranking if we haven't already done hybrid scoring                    
                 rerank_result = self.invoke_tool("rerank_documents_by_relevance", {
                     "query": query,
@@ -1108,27 +1187,31 @@ class VectorRAGAgent(SecureAgentBase):
                 })
                 documents = rerank_result.documents
                 reranking_applied = rerank_result.reranking_applied
+            else:
+                logger.info("vector_rag_skipping_reranking", 
+                           has_llm=self.llm is not None,
+                           documents_count=len(documents))
             
             # Update state
             state["vector_docs"] = documents
             
             logger.info(
-                "hybrid_retrieval_function_calling",
+                "vector_rag_retrieve_documents_completed",
                 documents_retrieved=len(documents),
                 search_strategy=search_strategy,
                 vector_count=vector_count,
                 bm25_count=bm25_count,
                 precision_score=precision_score,
                 reranking_applied=reranking_applied,
-                trace_id=state.get('trace_id')
+                trace_id=trace_id
             )
             
             return state
             
         except Exception as e:
-            logger.error("hybrid_rag_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
+            logger.error("vector_rag_retrieve_documents_error", error=str(e), trace_id=trace_id)
             errors = state.get("errors") or []
-            state["errors"] = errors + [f"Hybrid RAG error: {str(e)}"]
+            state["errors"] = errors + [f"Hybrid retrieval error: {str(e)}"]
             state["vector_docs"] = []
             return state
 
@@ -1145,13 +1228,23 @@ class GraphRAGAgent(SecureAgentBase):
         super().__init__(AgentRole.GRAPH_RAG)
         self.driver = neo4j_driver
         self.llm = llm
+        
+        logger.info("graph_rag_agent_initialized",
+                   has_neo4j_driver=neo4j_driver is not None,
+                   has_llm=llm is not None)
     
     @traceable(**get_traceable_config("GraphRAGAgent"))
     def extract_and_query(self, state: WorkflowState) -> WorkflowState:
         """Extract entities and query knowledge graph using function calling approach"""
         
+        trace_id = state.get('trace_id')
+        logger.info("graph_rag_extract_and_query_started", trace_id=trace_id)
+        
         try:
             query = state["query"]
+            logger.info("graph_rag_processing_query",
+                       query_length=len(query),
+                       trace_id=trace_id)
             
             # Step 1: Extract entities, relationships, and concepts
             extraction_result = self.invoke_tool("extract_entities_from_query", {
@@ -1160,6 +1253,9 @@ class GraphRAGAgent(SecureAgentBase):
             })
             
             # Step 2: Execute graph queries based on extraction
+            logger.info("graph_rag_executing_graph_queries",
+                       entities_extracted=len(extraction_result.entities),
+                       scenario=extraction_result.scenario)
             graph_result = self.invoke_tool("execute_graph_queries", {
                 "extraction": extraction_result,
                 "neo4j_driver": self.driver
@@ -1169,20 +1265,20 @@ class GraphRAGAgent(SecureAgentBase):
             state["graph_triples"] = graph_result.triples
             
             logger.info(
-                "graph_retrieval_function_calling",
+                "graph_rag_extract_and_query_completed",
                 entities_found=len(extraction_result.entities),
                 relationships_found=len(extraction_result.relationships),
                 concepts_found=len(extraction_result.concepts),
                 scenario_used=extraction_result.scenario,
                 queries_executed=graph_result.queries_executed,
                 triples_retrieved=len(graph_result.triples),
-                trace_id=state.get('trace_id')
+                trace_id=trace_id
             )
             
             return state
             
         except Exception as e:
-            logger.error("graph_rag_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
+            logger.error("graph_rag_extract_and_query_error", error=str(e), trace_id=trace_id)
             errors = state.get("errors") or []
             state["errors"] = errors + [f"Graph RAG error: {str(e)}"]
             state["graph_triples"] = []
@@ -1191,6 +1287,8 @@ class GraphRAGAgent(SecureAgentBase):
 # Register all tools with access control
 def register_agent_tools():
     """Register all tools with their allowed agent roles"""
+    
+    logger.info("register_agent_tools_started")
     
     # Orchestrator tools
     tool_registry.register_tool(
@@ -1225,6 +1323,14 @@ def register_agent_tools():
         execute_graph_queries,
         ToolMetadata("execute_graph_queries", [AgentRole.GRAPH_RAG])
     )
+    
+    logger.info("register_agent_tools_completed",
+               total_tools_registered=7,
+               orchestrator_tools=3,
+               vector_rag_tools=2,
+               graph_rag_tools=2)
 
 # Initialize tool registry
+logger.info("initializing_agent_tools")
 register_agent_tools()
+logger.info("agent_tools_initialization_completed")

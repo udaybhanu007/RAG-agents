@@ -409,7 +409,7 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_q
             if patient_triples:
                 triples.extend(patient_triples)
                 logger.info("patient_id_query_executed", triples_found=len(patient_triples))
-                return GraphQueryResult(triples=triples[:20], queries_executed=1, scenario_used="PATIENT_ID")
+                return GraphQueryResult(triples=triples, queries_executed=1, scenario_used="PATIENT_ID")
             
             # Step 3: Build and execute adaptive query with sanitized query
             if query_context["has_filters"]:
@@ -427,7 +427,7 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_q
                 logger.info("fallback_search_executed", triples_found=len(fallback_triples))
             
             return GraphQueryResult(
-                triples=triples[:20],
+                triples=triples,
                 queries_executed=1,
                 scenario_used="ADAPTIVE"
             )
@@ -463,7 +463,7 @@ def _analyze_neo4j_query_context(query: str, entities: List[str]) -> Dict[str, A
             break
     
     # Dynamic age detection with semantic understanding
-    age_patterns = re.findall(r'(\d+)\s*(?:\+|years?\s+old|years?)', query_lower)
+    age_patterns = re.findall(r'(?:age.*?is\s*|aged?\s*)(\d+)|(\d+)\s*(?:\+|years?\s+old|years?)', query_lower)
     over_patterns = re.findall(r'(?:over|above|older\s+than|aged\s+over)\s*(\d+)', query_lower)
     under_patterns = re.findall(r'(?:under|below|less\s+than|younger\s+than)\s*(\d+)', query_lower)
     elderly_patterns = ["elderly", "senior", "aged"]
@@ -477,11 +477,24 @@ def _analyze_neo4j_query_context(query: str, entities: List[str]) -> Dict[str, A
             age_value = int(over_patterns[0])
             operator = ">"
         else:
-            age_value = int(age_patterns[0])
-            operator = ">" if any(word in query_lower for word in ["over", "above", "older", "aged"]) else ">="
+            # Handle tuple patterns from findall
+            age_value = None
+            for match in age_patterns:
+                if isinstance(match, tuple):
+                    for group in match:
+                        if group:
+                            age_value = int(group)
+                            break
+                else:
+                    age_value = int(match)
+                break
+            
+            if age_value:
+                operator = "=" if "age is" in query_lower or "aged" in query_lower else ">="
         
-        context["numerical_ranges"]["age"] = {"value": age_value, "operator": operator}
-        context["has_filters"] = True
+        if age_value:
+            context["numerical_ranges"]["age"] = {"value": age_value, "operator": operator}
+            context["has_filters"] = True
     elif any(pattern in query_lower for pattern in elderly_patterns):
         # Handle semantic age terms
         context["numerical_ranges"]["age"] = {"value": 65, "operator": ">"}
@@ -501,7 +514,7 @@ def _analyze_neo4j_query_context(query: str, entities: List[str]) -> Dict[str, A
     
     return context
 
-def _handle_patient_id_queries(session, entities: List[str]) -> List[str]:
+def _handle_patient_id_queries(session, entities: List[str]) -> List[Dict[str, Any]]:
     """Handle specific patient ID queries with exact matching"""
     triples = []
     
@@ -524,16 +537,27 @@ def _handle_patient_id_queries(session, entities: List[str]) -> List[str]:
                 
                 for record in result:
                     if record["p"]:
-                        triples.append(f"Patient(id={record['p']['id']}, age_min={record['p'].get('age_min', 'N/A')}, gender={record['p'].get('gender', 'N/A')})")
+                        triples.append({
+                            "type": "patient",
+                            "id": record['p']['id'],
+                            "age": record['p'].get('age', 'N/A'),
+                            "gender": record['p'].get('gender', 'N/A')
+                        })
                     if record["f"]:
-                        triples.append(f"Finding(name={record['f']['name']})")
+                        triples.append({
+                            "type": "finding",
+                            "name": record['f']['name']
+                        })
                     if record["r1"]:
-                        triples.append(f"Patient-HAS_FINDING->Finding")
+                        triples.append({
+                            "type": "relationship",
+                            "relationship": "Patient-HAS_FINDING->Finding"
+                        })
                 break
     
     return triples
 
-def _execute_adaptive_query(session, context: Dict[str, Any], original_query: str, entities: Optional[List[str]] = None) -> List[str]:
+def _execute_adaptive_query(session, context: Dict[str, Any], original_query: str, entities: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """
     Execute adaptive Cypher query based on context analysis.
     Builds query dynamically like Vector DB query construction.
@@ -548,7 +572,7 @@ def _execute_adaptive_query(session, context: Dict[str, Any], original_query: st
     # Dynamic WHERE clause building
     if "age" in context["numerical_ranges"]:
         age_info = context["numerical_ranges"]["age"]
-        where_conditions.append(f"p.age_min {age_info['operator']} $age_threshold")
+        where_conditions.append(f"p.age {age_info['operator']} $age_threshold")
         parameters["age_threshold"] = age_info["value"]
     
     if "gender" in context["demographic_filters"]:
@@ -557,7 +581,7 @@ def _execute_adaptive_query(session, context: Dict[str, Any], original_query: st
     
     # Add entity-based filtering for medical conditions
     if entities:
-        medical_entities = [e for e in entities if e.lower() not in ['female', 'females', 'male', 'males', 'years old', 'year old', 'patients', 'patient', 'young female patients', 'elderly patients', 'young patients', 'elderly', 'young', 'findings', 'multiple medical conditions', 'medical conditions', 'conditions']]
+        medical_entities = [e for e in entities if e.lower() not in ['female', 'females', 'male', 'males', 'years old', 'year old', 'patients', 'patient', 'young female patients', 'elderly patients', 'young patients', 'elderly', 'young', 'findings', 'multiple medical conditions', 'medical conditions', 'conditions', 'male patients', 'female patients', 'age']]
         if medical_entities:
             # Filter by the first medical entity (most relevant)
             primary_entity = medical_entities[0]
@@ -571,7 +595,7 @@ def _execute_adaptive_query(session, context: Dict[str, Any], original_query: st
     description = "patients"  # Default description
     
     if context["query_intent"] == "aggregation":
-        select_clause = "RETURN f.name as finding, count(*) as count ORDER BY count DESC LIMIT 15"
+        select_clause = "RETURN f.name as finding, count(*) as count ORDER BY count DESC"
         
         # Build description for results
         desc_parts = []
@@ -586,11 +610,11 @@ def _execute_adaptive_query(session, context: Dict[str, Any], original_query: st
         
     elif context["query_intent"] == "multiple_conditions":
         # Use WITH clause for patient-level aggregation
-        select_clause = "WITH p, collect(DISTINCT f.name) as conditions WHERE size(conditions) > 1 RETURN p.id as patient_id, p.age_min as age, p.gender as gender, conditions, size(conditions) as condition_count ORDER BY condition_count DESC LIMIT 20"
+        select_clause = "WITH p, collect(DISTINCT f.name) as conditions WHERE size(conditions) > 1 RETURN p.id as patient_id, p.age as age, p.gender as gender, conditions, size(conditions) as condition_count ORDER BY condition_count DESC"
         
     else:
         # Default individual finding query
-        select_clause = "RETURN p.id as patient_id, p.age_min as age, p.gender as gender, f.name as finding LIMIT 10"
+        select_clause = "RETURN p.id as patient_id, p.age as age, p.gender as gender, f.name as finding"
     
     # Build final query
     final_query = match_clause
@@ -609,15 +633,33 @@ def _execute_adaptive_query(session, context: Dict[str, Any], original_query: st
         
         if context["query_intent"] == "aggregation":
             for record in result:
-                triples.append(f"Finding({record['finding']}: {record['count']} cases in {description})")
+                triples.append({
+                    "type": "aggregation",
+                    "finding": record['finding'],
+                    "count": record['count'],
+                    "description": description
+                })
         elif context["query_intent"] == "multiple_conditions":
             for record in result:
                 conditions_str = ", ".join(record['conditions'])
-                triples.append(f"Patient(id={record['patient_id']}, age={record['age']}, gender={record['gender']}, conditions=[{conditions_str}], count={record['condition_count']})")
+                triples.append({
+                    "type": "multiple_conditions",
+                    "patient_id": record['patient_id'],
+                    "age": record['age'],
+                    "gender": record['gender'],
+                    "conditions": record['conditions'],
+                    "condition_count": record['condition_count']
+                })
         else:
             for record in result:
                 # Handle individual finding format  
-                triples.append(f"Patient(id={record['patient_id']}, age={record['age']}, gender={record['gender']})-HAS_FINDING->Finding({record['finding']})")
+                triples.append({
+                    "type": "patient_finding",
+                    "patient_id": record['patient_id'],
+                    "age": record['age'],
+                    "gender": record['gender'],
+                    "finding": record['finding']
+                })
                 
     except Exception as e:
         logger.error("adaptive_query_execution_failed", error=str(e), query=final_query)
@@ -625,7 +667,7 @@ def _execute_adaptive_query(session, context: Dict[str, Any], original_query: st
     return triples
 
 
-def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
+def _execute_fallback_entity_search(session, entities: List[str]) -> List[Dict[str, Any]]:
     """Fallback entity search when no specific patterns match"""
     triples = []
     
@@ -635,7 +677,6 @@ def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
             MATCH (n)
             WHERE any(prop in keys(n) WHERE toString(n[prop]) CONTAINS $entity)
             RETURN n, labels(n)[0] as node_type
-            LIMIT 10
             """
             
             logger.info("executing_fallback_entity_search", entity=str(entity))
@@ -645,7 +686,12 @@ def _execute_fallback_entity_search(session, entities: List[str]) -> List[str]:
                 node = record["n"]
                 node_type = record["node_type"]
                 node_id = node.get('id', node.get('name', 'unknown'))
-                triples.append(f"{node_type}(id={node_id}, properties={dict(node.items())})")
+                triples.append({
+                    "type": "entity_search",
+                    "node_type": node_type,
+                    "id": node_id,
+                    "properties": dict(node.items())
+                })
                         
         except Exception as e:
             logger.debug("fallback_entity_search_failed", entity=entity, error=str(e))

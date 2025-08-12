@@ -230,12 +230,44 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
     graph_content = "No relationship information available"
     if graph_triples:
         graph_items = []
-        for i, triple in enumerate(graph_triples[:10]):  # Limit to top 10
-            subject = sanitize_user_input(str(triple.get("subject", "")))
-            predicate = sanitize_user_input(str(triple.get("predicate", "")))
-            obj = sanitize_user_input(str(triple.get("object", "")))
-            graph_items.append(f"Relationship {i+1}: {subject} -> {predicate} -> {obj}")
-        graph_content = "\n".join(graph_items)
+        for i, triple in enumerate(graph_triples):  # Process all triples
+            triple_type = triple.get("type", "unknown")
+            
+            if triple_type == "patient_finding":
+                # Handle patient finding data structure
+                patient_id = sanitize_user_input(str(triple.get("patient_id", "")))
+                age = sanitize_user_input(str(triple.get("age", "")))
+                gender = sanitize_user_input(str(triple.get("gender", "")))
+                finding = sanitize_user_input(str(triple.get("finding", "")))
+                graph_items.append(f"Patient {patient_id}: Age {age}, Gender {gender}, Finding: {finding}")
+            
+            elif triple_type == "aggregation":
+                # Handle aggregation data structure
+                finding = sanitize_user_input(str(triple.get("finding", "")))
+                count = sanitize_user_input(str(triple.get("count", "")))
+                graph_items.append(f"Finding {finding}: {count} patients")
+            
+            elif triple_type == "multiple_conditions":
+                # Handle multiple conditions data structure
+                patient_id = sanitize_user_input(str(triple.get("patient_id", "")))
+                age = sanitize_user_input(str(triple.get("age", "")))
+                gender = sanitize_user_input(str(triple.get("gender", "")))
+                conditions = triple.get("conditions", [])
+                conditions_str = ", ".join([sanitize_user_input(str(c)) for c in conditions])
+                graph_items.append(f"Patient {patient_id}: Age {age}, Gender {gender}, Conditions: {conditions_str}")
+            
+            else:
+                # Fallback for legacy subject-predicate-object format
+                subject = sanitize_user_input(str(triple.get("subject", "")))
+                predicate = sanitize_user_input(str(triple.get("predicate", "")))
+                obj = sanitize_user_input(str(triple.get("object", "")))
+                if subject or predicate or obj:
+                    graph_items.append(f"Relationship {i+1}: {subject} -> {predicate} -> {obj}")
+        
+        if graph_items:
+            graph_content = "\n".join(graph_items)
+        else:
+            graph_content = "No relationship information available"
 
     try:
         # Step 4: Use secure LLM interaction with input delimiters

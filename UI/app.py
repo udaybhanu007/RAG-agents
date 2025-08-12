@@ -26,7 +26,7 @@ def initialize_workflow():
     
     try:
         print("🚀 Initializing Multi-Agent RAG Workflow...")
-        workflow = MultiAgentRAGWorkflow(eager_bm25_init=True)
+        workflow = MultiAgentRAGWorkflow()
         workflow_ready = True
         print("✅ Multi-Agent RAG Workflow ready!")
         
@@ -158,11 +158,11 @@ HTML_TEMPLATE = """
             <div class="example-item" onclick="useExample('What is NIH Chest X-ray?')">
                 What is NIH Chest X-ray?
             </div>
-            <div class="example-item" onclick="useExample('Tell me about the medical history of patient ID 1, including all findings and their progression')">
-                Tell me about the medical history of patient ID 1, including all findings and their progression
+            <div class="example-item" onclick="useExample('Total number of male patients ,age is 30, Finding Labels is effusion')">
+                Total number of male patients ,age is 30, Finding Labels is effusion
             </div>
-            <div class="example-item" onclick="useExample('what is .net?')">
-                what is .net?
+            <div class="example-item" onclick="useExample('Total number of Female patients ,age less than 30, Finding Labels is effusion')">
+                Total number of Female patients ,age less than 30, Finding Labels is effusion
             </div>
         </div>
         
@@ -301,9 +301,18 @@ def search():
         start = time.time()
         
         print(f"🔍 Processing query: {query[:100]}...")
+        print(f"📊 Workflow ready status: {workflow_ready}")
+        print(f"🧠 Workflow instance: {workflow is not None}")
         
-        # THIS IS THE KEY LINE - Your exact workflow call
-        answer = workflow.run(query)
+        # Add detailed logging for debugging
+        try:
+            # THIS IS THE KEY LINE - Your exact workflow call
+            print("🚀 Calling workflow.run()...")
+            answer = workflow.run(query)
+            print(f"✅ Workflow.run() completed. Answer: {answer[:100] if answer else 'None'}...")
+        except Exception as workflow_error:
+            print(f"❌ Workflow.run() failed: {str(workflow_error)}")
+            raise workflow_error
         
         end = time.time()
         

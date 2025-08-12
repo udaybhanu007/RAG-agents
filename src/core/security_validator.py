@@ -60,20 +60,23 @@ class QuerySecurityValidator:
         return sanitized
     
     def _clean_query(self, query: str) -> str:
-        """Clean and sanitize the query"""
-        # Remove control characters
+        """Clean and sanitize the query with minimal changes"""
+        # Remove control characters only
         cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', query)
         
-        # Replace dangerous characters
+        # Only replace truly dangerous characters, not normal query characters
         replacements = {
-            '<': '&lt;', '>': '&gt;', '{': '&#123;', '}': '&#125;',
-            '[': '&#91;', ']': '&#93;', '(': '&#40;', ')': '&#41;',
-            ';': '&#59;', '--': '&#45;&#45;', '/*': '&#47;&#42;',
-            '*/': '&#42;&#47;', '\\': '&#92;'
+            '<script': '&lt;script',  # Only replace script tags
+            '</script': '&lt;/script',
+            'javascript:': 'javascript&#58;',
+            '--': '&#45;&#45;',  # SQL comment
+            '/*': '&#47;&#42;',  # SQL comment start
+            '*/': '&#42;&#47;',  # SQL comment end
         }
         
-        for char, replacement in replacements.items():
-            cleaned = cleaned.replace(char, replacement)
+        for dangerous, safe in replacements.items():
+            cleaned = cleaned.replace(dangerous.lower(), safe)
+            cleaned = cleaned.replace(dangerous.upper(), safe)
         
         # Clean up whitespace
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()

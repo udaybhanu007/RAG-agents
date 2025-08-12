@@ -28,8 +28,7 @@ def ingest_to_neo4j(data_patient: dict, data_bbox: dict, uri: str = uri, usernam
                         "patient_id": patient_id,
                         "finding": finding,
                         "frequency": finding_freq.get(finding, 1),
-                        "age_min": age_range[0],
-                        "age_max": age_range[1],
+                        "age": age_range[0],  # Use first value as single age
                         "gender": gender,
                         "total_images": total_images
                     })
@@ -40,8 +39,7 @@ def ingest_to_neo4j(data_patient: dict, data_bbox: dict, uri: str = uri, usernam
                 session.run('''
                     UNWIND $batch AS row
                     MERGE (p:Patient {id: row.patient_id})
-                    SET p.age_min = row.age_min,
-                        p.age_max = row.age_max,
+                    SET p.age = row.age,
                         p.gender = row.gender,
                         p.total_images = row.total_images
                     MERGE (f:Finding {name: row.finding})
@@ -111,11 +109,10 @@ if __name__ == "__main__":
 def ingest_patient_findings(tx, patient_id, findings, age_range, gender, total_images, finding_freq):
     tx.run("""
         MERGE (p:Patient {id: $patient_id})
-        SET p.age_min = $age_min,
-            p.age_max = $age_max,
+        SET p.age = $age,
             p.gender = $gender,
             p.total_images = $total_images
-    """, patient_id=patient_id, age_min=age_range[0], age_max=age_range[1],
+    """, patient_id=patient_id, age=age_range[0],
          gender=gender, total_images=total_images)
 
     for finding in findings:

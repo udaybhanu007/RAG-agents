@@ -131,31 +131,6 @@ def get_logger(name: str = None) -> structlog.BoundLogger:
         return structlog.get_logger()
 
 
-def log_with_context(logger: structlog.BoundLogger, **context) -> structlog.BoundLogger:
-    """
-    Add context to logger that will be included in all subsequent log entries
-    
-    Args:
-        logger: The logger instance
-        **context: Key-value pairs to add as context
-    
-    Returns:
-        Logger with bound context
-    
-    Example:
-        # Add session context that will appear in all logs
-        session_logger = log_with_context(
-            logger, 
-            session_id="session_123", 
-            user_id="user_456"
-        )
-        
-        session_logger.info("query_processed", query="What is AI?")
-        # Output will include session_id and user_id automatically
-    """
-    return logger.bind(**context)
-
-
 # Example usage and testing
 if __name__ == "__main__":
     # Test the logging configuration
@@ -174,8 +149,8 @@ if __name__ == "__main__":
     logger.warning("Warning message", issue="minor")
     logger.error("Error message", error_code=500)
     
-    # Test context binding
-    session_logger = log_with_context(logger, session_id="test_123", trace_id="trace_456")
+    # Test context binding (using structlog's bind method directly)
+    session_logger = logger.bind(session_id="test_123", trace_id="trace_456")
     session_logger.info("Context test", action="processing")
     
     print("✅ Logging configuration test completed!")

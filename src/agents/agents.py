@@ -17,7 +17,7 @@ from langchain_community.retrievers import BM25Retriever
 from pydantic.v1 import BaseModel, Field
 from qdrant_client import QdrantClient
 from workflow_state import WorkflowState
-from core.observability import observability, traceable, get_traceable_config
+from core.observability import traceable, get_traceable_config
 from logging_config import get_logger
 from tool_governance import (
     ToolRegistry, ToolMetadata, AgentRole, tool_registry, 

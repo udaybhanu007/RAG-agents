@@ -22,7 +22,7 @@ from langchain.schema import Document
 from workflow_state import WorkflowState, create_initial_state
 from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent # type: ignore
 from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
-from core.observability import observability, traceable, get_traceable_config
+from core.observability import traceable, get_traceable_config
 from logging_config import configure_logging, get_logger
 from sentence_transformers import SentenceTransformer
 from core.azure_keyvault_manager import get_secret_from_keyvault

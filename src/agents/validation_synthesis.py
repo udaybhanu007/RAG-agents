@@ -3,7 +3,7 @@ from langchain_openai import AzureChatOpenAI
 from langchain_core.tools import tool
 from pydantic.v1 import BaseModel, Field
 from workflow_state import WorkflowState, ValidationResult
-from core.observability import observability, traceable, get_traceable_config
+from core.observability import traceable, get_traceable_config
 from logging_config import get_logger
 from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
 import re

@@ -29,6 +29,10 @@ class WorkflowState(TypedDict):
     vector_docs: Optional[List[Dict[str, Any]]]
     graph_triples: Optional[List[Dict[str, Any]]]
     
+    # Context strings for downstream processing
+    vector_context: Optional[str]
+    graph_context: Optional[str]
+    
     # Validation results
     validation_passed: Optional[bool]
     validation_errors: Optional[List[str]]
@@ -69,6 +73,8 @@ def create_initial_state(query: str, session_id: Optional[str] = None) -> Workfl
         routing_confidence=None,
         vector_docs=None,
         graph_triples=None,
+        vector_context=None,
+        graph_context=None,
         validation_passed=None,
         validation_errors=None,
         validation_result=None,

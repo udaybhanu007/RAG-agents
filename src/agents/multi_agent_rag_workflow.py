@@ -14,7 +14,6 @@ from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent # type: igno
 from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
 from observability import observability
 from logging_config import configure_logging, get_logger
-from sentence_transformers import SentenceTransformer
 
 # Load environment variables
 load_dotenv()
@@ -64,17 +63,10 @@ class MultiAgentRAGWorkflow:
             )
             
             # Initialize embeddings
-            # model_name ='all-MiniLM-L6-v2'
-            # self.embeddings =SentenceTransformer(model_name)
             self.embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-MiniLM-L6-v2",
                 model_kwargs={'device': 'cpu'}
             )
-        
-            # self.embeddings = AzureOpenAIEmbeddings(
-            #     azure_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002"),
-            #     api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
-            # )
             
             # Initialize Qdrant client
             self.qdrant_client = QdrantClient(
@@ -245,8 +237,18 @@ class MultiAgentRAGWorkflow:
         Orchestrator agent node - Simple routing decision
         Measures performance and logs routing decisions
         """
+        # DEBUG: Log the incoming query and orchestrator decision
+        query = state.get("query", "No query")
+        print(f"🎯 ORCHESTRATOR DEBUG: Processing query: '{query}'")
+        
         with observability.measure_agent_performance("orch", cast(Dict[str, Any], state)):
             result = self.orchestrator.route_query(state)
+            
+            # DEBUG: Log the routing decision
+            route = result.get("route", "unknown")
+            print(f"🎯 ORCHESTRATOR DEBUG: Route decision: '{route}'")
+            print(f"🎯 ORCHESTRATOR DEBUG: Full result keys: {list(result.keys())}")
+            
             return result
     
     def vector_rag_node(self, state: WorkflowState) -> WorkflowState:
@@ -254,8 +256,19 @@ class MultiAgentRAGWorkflow:
         Vector RAG agent node - Simple semantic search
         Performs search using Qdrant vector database
         """
+        # DEBUG: Log vector RAG processing
+        query = state.get("query", "No query")
+        print(f"🔍 VECTOR RAG DEBUG: Processing query: '{query}'")
+        
         with observability.measure_agent_performance("vec", cast(Dict[str, Any], state)):
             result = self.vector_rag.retrieve_documents(state)
+            
+            # DEBUG: Log vector search results
+            vector_context = result.get("vector_context", "No vector context")
+            vector_docs_count = len(vector_context.split("\n")) if vector_context else 0
+            print(f"🔍 VECTOR RAG DEBUG: Retrieved {vector_docs_count} document chunks")
+            print(f"🔍 VECTOR RAG DEBUG: Vector context length: {len(vector_context) if vector_context else 0} chars")
+            
             return result
     
     def graph_rag_node(self, state: WorkflowState) -> WorkflowState:
@@ -263,8 +276,23 @@ class MultiAgentRAGWorkflow:
         Graph RAG agent node - Simple graph queries
         Performs knowledge graph queries using Neo4j
         """
+        # DEBUG: Log graph RAG processing
+        query = state.get("query", "No query")
+        print(f"📊 GRAPH RAG DEBUG: Processing query: '{query}'")
+        
         with observability.measure_agent_performance("graph", cast(Dict[str, Any], state)):
             result = self.graph_rag.extract_and_query(state)
+            
+            # DEBUG: Log graph search results
+            graph_context = result.get("graph_context", "No graph context")
+            entities = result.get("entities", [])
+            cypher_query = result.get("cypher_query", "No cypher query")
+            
+            print(f"📊 GRAPH RAG DEBUG: Extracted entities: {entities}")
+            print(f"📊 GRAPH RAG DEBUG: Generated Cypher: {cypher_query}")
+            print(f"📊 GRAPH RAG DEBUG: Graph context length: {len(graph_context) if graph_context else 0} chars")
+            print(f"📊 GRAPH RAG DEBUG: Graph context preview: {graph_context[:200] if graph_context else 'None'}...")
+            
             return result
     
     def validator_node(self, state: WorkflowState) -> WorkflowState:
@@ -272,8 +300,25 @@ class MultiAgentRAGWorkflow:
         Validator agent node - Simple consistency checking
         Happy path: validation should generally pass
         """
+        # DEBUG: Log validator processing
+        query = state.get("query", "No query")
+        vector_context = state.get("vector_context", "")
+        graph_context = state.get("graph_context", "")
+        
+        print(f"✅ VALIDATOR DEBUG: Processing query: '{query}'")
+        print(f"✅ VALIDATOR DEBUG: Has vector context: {bool(vector_context)} ({len(vector_context) if vector_context else 0} chars)")
+        print(f"✅ VALIDATOR DEBUG: Has graph context: {bool(graph_context)} ({len(graph_context) if graph_context else 0} chars)")
+        
         with observability.measure_agent_performance("val", cast(Dict[str, Any], state)):
             result = self.validator.validate_results(state)
+            
+            # DEBUG: Log validation results
+            validation_status = result.get("validation_status", "unknown")
+            validation_details = result.get("validation_details", "No details")
+            
+            print(f"✅ VALIDATOR DEBUG: Validation status: {validation_status}")
+            print(f"✅ VALIDATOR DEBUG: Validation details: {validation_details}")
+            
             return result
     
     def synthesizer_node(self, state: WorkflowState) -> WorkflowState:
@@ -281,25 +326,49 @@ class MultiAgentRAGWorkflow:
         Answer synthesis agent node - Final answer composition
         Creates comprehensive answer without citations
         """
+        # DEBUG: Log synthesizer processing
+        query = state.get("query", "No query")
+        vector_context = state.get("vector_context", "")
+        graph_context = state.get("graph_context", "")
+        
+        print(f"🧠 SYNTHESIZER DEBUG: Processing query: '{query}'")
+        print(f"🧠 SYNTHESIZER DEBUG: Input contexts - Vector: {len(vector_context) if vector_context else 0} chars, Graph: {len(graph_context) if graph_context else 0} chars")
+        
         with observability.measure_agent_performance("ans", cast(Dict[str, Any], state)):
             result = self.synthesizer.synthesize_answer(state)
+            
+            # DEBUG: Log synthesis results
+            final_answer = result.get("answer", "No answer")
+            print(f"🧠 SYNTHESIZER DEBUG: Generated answer length: {len(final_answer)} chars")
+            print(f"🧠 SYNTHESIZER DEBUG: Answer preview: {final_answer[:200]}...")
+            
             return result
     
     def route_query(self, state: WorkflowState) -> str:
         """Route the query based on orchestrator decision"""
         route = state.get("route", "both")
         
+        # DEBUG: Log routing decision details
+        query = state.get("query", "No query")
+        print(f"🔀 ROUTING DEBUG: Query: '{query}'")
+        print(f"🔀 ROUTING DEBUG: Orchestrator decided route: '{route}'")
+        
         if route == "vector":
+            print(f"🔀 ROUTING DEBUG: Taking VECTOR-ONLY path")
             return "vector"
         elif route == "graph":
+            print(f"🔀 ROUTING DEBUG: Taking GRAPH-ONLY path")
             return "graph"
         elif route == "both":
+            print(f"🔀 ROUTING DEBUG: Taking BOTH path (vector first, then graph)")
             return "both_vector_first"  # Start with vector, then graph
         elif route == "none":
+            print(f"🔀 ROUTING DEBUG: Taking NONE path (non-medical query)")
             return "none"  # Non-medical query - end workflow
         else:
             # This should never happen with function calling OrchestratorAgent
             # but provide fallback for safety
+            print(f"🔀 ROUTING DEBUG: FALLBACK - Unknown route '{route}', defaulting to BOTH")
             return "both_vector_first"
     
     def check_if_graph_needed(self, state: WorkflowState) -> str:
@@ -357,10 +426,10 @@ def main():
         
         # Example query
         #query ="what is .net?"
-        #query = "What is NIH Chest X-ray?"
+        query = "What is NIH Chest X-ray?"
         query ="Provide concerns about the image label accuracy in medical"
-        #query ="Tell me about the medical history of patient ID 1, including all findings and their progression"
-        #query ="Tell me about the medical history of patient ID 1, including all findings and their progression?"
+        query ="Tell me about the medical history of patient ID 1, including all findings and their progression"
+        query ="Tell me about the medical history of patient ID 1, including all findings and their progression?"
         print(f"Query: {query}")
         print("=" * 50)
         
@@ -377,4 +446,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

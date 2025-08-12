@@ -34,7 +34,6 @@ from core.observability import traceable, get_traceable_config
 from core.azure_keyvault_manager import get_secret_from_keyvault
 from core.security_middleware import SecurityMiddleware, SecurityViolationError
 from logging_config import configure_logging, get_logger
-from sentence_transformers import SentenceTransformer
 
 # Note: Environment loading is handled by azure_keyvault_manager based on Keyvalue_Enabled flag
 
@@ -397,4 +396,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

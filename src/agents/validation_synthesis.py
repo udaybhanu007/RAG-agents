@@ -147,64 +147,21 @@ def validate_graph_relevance(query: str, graph_triples: List[Dict[str, Any]]) ->
     # Find matching entities in graph results
     key_matches = []
     for triple in graph_triples:
-        # Handle both new format (description) and old format (subject/predicate/object)
-        if isinstance(triple, dict):
-            if "description" in triple:
-                # New format: extract words from description
-                description = str(triple.get("description", "")).lower()
-                description_words = set(re.findall(r'\b\w+\b', description))
-                matches = query_words.intersection(description_words)
-                for match in matches:
-                    # Allow shorter matches for numbers and key medical terms
-                    if (len(match) > 2 or match.isdigit()) and match not in key_matches:
-                        key_matches.append(match)
-            else:
-                # Old format: check subject and object
-                subject = str(triple.get("subject", "")).lower()
-                obj = str(triple.get("object", "")).lower()
-                
-                # Check for query word matches in entities
-                for entity in [subject, obj]:
-                    entity_words = set(re.findall(r'\b\w+\b', entity))
-                    matches = query_words.intersection(entity_words)
-                    for match in matches:
-                        if (len(match) > 2 or match.isdigit()) and match not in key_matches:
-                            key_matches.append(match)
+        subject = str(triple.get("subject", "")).lower()
+        obj = str(triple.get("object", "")).lower()
+        
+        # Check for query word matches in entities
+        for entity in [subject, obj]:
+            entity_words = set(re.findall(r'\b\w+\b', entity))
+            matches = query_words.intersection(entity_words)
+            for match in matches:
+                if len(match) > 3 and match not in key_matches:
+                    key_matches.append(match)
     
-    # Enhanced relevance calculation with medical and count query awareness
+    # Simple relevance calculation
     match_coverage = len(key_matches) / max(len(query_words), 1)
-    
-    # Boost score for medical context and patient queries
-    relevance_score = match_coverage * 1.5  # Base boost
-    
-    # Check for count/statistical queries - these should always be considered relevant if they have numbers
-    is_count_query = any(word in query_lower for word in ['count', 'total', 'how many', 'number', 'patients found'])
-    has_numeric_result = any('patient' in str(triple.get('description', '')).lower() and 
-                           any(char.isdigit() for char in str(triple.get('description', ''))) 
-                           for triple in graph_triples)
-    
-    # CRITICAL FIX: Count queries with numeric results should ALWAYS pass validation
-    if is_count_query and has_numeric_result:
-        relevance_score = 0.95  # Very high relevance for count queries with numeric results
-        key_matches.extend(['count', 'total', 'patients', 'found'])  # Add implicit matches
-        # Force validation to pass for count queries
-        return RelevanceValidation(
-            is_relevant=True,
-            relevance_score=relevance_score,
-            reasoning=f"Count query with numeric result - Auto-validated. Entities: {len(key_matches)}, Coverage: {match_coverage:.2f}",
-            key_matches=key_matches[:5]
-        )
-    
-    # Additional boost for patient-specific queries (they have exact patient/ID matches)
-    if any(word in key_matches for word in ['patient', 'finding', 'medical']):
-        relevance_score += 0.3
-    
-    # Additional boost for numeric matches (patient IDs, ages, etc.)
-    if any(match.isdigit() for match in key_matches):
-        relevance_score += 0.2
-    
-    relevance_score = min(1.0, relevance_score)  # Cap at 1.0
-    is_relevant = relevance_score > 0.15  # Standard threshold for non-count queries
+    relevance_score = min(1.0, match_coverage * 2)  # Boost score for graph results
+    is_relevant = relevance_score > 0.3 and len(key_matches) > 0
     
     reasoning = f"Entities found: {len(key_matches)}, Coverage: {match_coverage:.2f}"
     
@@ -350,72 +307,6 @@ class ValidatorAgent:
                 "vector_docs": vector_docs
             })
 
-                # Step 2: Validate graph search relevance (only if we have graph triples)
-                if graph_triples:
-                    graph_validation = validate_graph_relevance.invoke({
-                        "query": query,
-                        "graph_triples": graph_triples
-                    })
-                
-                # Combine validation results - focus only on relevance
-                overall_passed = True
-                errors = []
-                confidence_scores = []
-                
-                # Check vector relevance
-                if vector_validation and vector_docs and not vector_validation.is_relevant:
-                    errors.append("Vector search results not relevant to query")
-                    overall_passed = False
-                if vector_validation and vector_docs:
-                    confidence_scores.append(vector_validation.relevance_score)
-                
-                # Check graph relevance
-                if graph_validation and graph_triples and not graph_validation.is_relevant:
-                    errors.append("Graph search results not relevant to query")
-                    overall_passed = False
-                if graph_validation and graph_triples:
-                    confidence_scores.append(graph_validation.relevance_score)
-                # Calculate overall confidence
-                overall_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.5
-                
-                # Create final validation result
-                validation_result = ValidationResult(
-                    passed=overall_passed,
-                    errors=errors,
-                    confidence_score=overall_confidence,
-                    consistency_issues=[]  # Not checking consistency anymore
-                )
-                
-                # Update state
-                state["validation_passed"] = overall_passed
-                state["validation_errors"] = errors
-                state["validation_result"] = validation_result
-                
-                logger.info(
-                    "validation_function_calling",
-                    passed=overall_passed,
-                    confidence=overall_confidence,
-                    vector_relevant=vector_validation.is_relevant if vector_validation and vector_docs else None,
-                    graph_relevant=graph_validation.is_relevant if graph_validation and graph_triples else None,
-                    errors_count=len(errors),
-                    trace_id=state.get('trace_id')
-                )
-                
-                return state
-                
-            except Exception as e:
-                logger.error("validator_function_calling_error", error=str(e), trace_id=state.get('trace_id'))
-                # Safe fallback - pass validation to avoid blocking workflow
-                validation_result = ValidationResult(
-                    passed=True,
-                    errors=[f"Validation error: {str(e)}"],
-                    confidence_score=0.5,
-                    consistency_issues=["Could not perform full validation"]
-                )
-                state["validation_passed"] = True
-                state["validation_errors"] = validation_result.errors
-                state["validation_result"] = validation_result
-                return state
              # uncomment later#######################################3
             # Step 2: Validate graph search relevance  
             # graph_validation = validate_graph_relevance.invoke({

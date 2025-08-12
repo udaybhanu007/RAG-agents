@@ -9,7 +9,19 @@ from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 from .utility_functions import UtilityFunctions
 from .ExtractedResponse import ExtractedResponse
-from core.azure_keyvault_manager import get_secret_from_keyvault
+import os
+import sys
+
+# Add the src directory to the path to enable absolute imports  
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+try:
+    from ..core.azure_keyvault_manager import get_secret_from_keyvault
+except ImportError:
+    from core.azure_keyvault_manager import get_secret_from_keyvault
 class StructuredDocumentIngestor:
     def __init__(self):
         pass

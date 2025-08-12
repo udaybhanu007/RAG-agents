@@ -1,12 +1,29 @@
 from typing import List, Dict, Any, Optional
+import re
+import sys
+import os
 from langchain_openai import AzureChatOpenAI
 from langchain_core.tools import tool
 from pydantic.v1 import BaseModel, Field
 from workflow_state import WorkflowState, ValidationResult
-from core.observability import observability, traceable, get_traceable_config
+
+# Add the src directory to the path to enable absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+# Try relative imports first, fall back to absolute imports
+try:
+    from ..core.observability import observability, traceable, get_traceable_config
+    from ..core.input_sanitization import detect_prompt_injection, sanitize_user_input, validate_llm_output, secure_llm_interaction
+except ImportError:
+    # Fall back to absolute imports
+    from core.observability import observability, traceable, get_traceable_config
+    from core.input_sanitization import detect_prompt_injection, sanitize_user_input, validate_llm_output, secure_llm_interaction
+
 from logging_config import get_logger
 from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
-import re
 
 logger = get_logger("validation_synthesis")
 
@@ -168,7 +185,8 @@ def validate_graph_relevance(query: str, graph_triples: List[Dict[str, Any]]) ->
 def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]], 
                                  graph_triples: List[Dict[str, Any]], llm) -> SynthesisResult:
     """
-    Synthesize comprehensive answer from vector and graph search results.
+    Secure synthesis of comprehensive answer from vector and graph search results.
+    Implements prompt injection protection and parameterized templates.
     
     Args:
         query: The user query
@@ -184,6 +202,11 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
                vector_docs_count=len(vector_docs),
                graph_triples_count=len(graph_triples))
     
+    # Step 1: Detect prompt injection attempts
+    if detect_prompt_injection(query):
+        logger.warning("prompt_injection_blocked_in_synthesis", query_snippet=query[:50])
+        return SynthesisResult(answer="Unable to process this query due to security restrictions.")
+    
     if not vector_docs and not graph_triples:
         logger.info("synthesize_answer_from_sources_completed",
                    answer_length=0,
@@ -191,59 +214,51 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
         return SynthesisResult(
             answer="I don't have enough information to answer this query."
         )
-    
-    # Format vector results
-    vector_content = ""
+
+    # Step 2: Format vector results with sanitization
+    vector_content = "No document information available"
     if vector_docs:
         vector_items = []
         for i, doc in enumerate(vector_docs[:5]):  # Limit to top 5
             content = doc.get("content", "")[:300]  # Limit content length
-            vector_items.append(f"Document {i+1}: {content}")
+            # Sanitize document content
+            sanitized_content = sanitize_user_input(content)
+            vector_items.append(f"Document {i+1}: {sanitized_content}")
         vector_content = "\n".join(vector_items)
-    
-    # Format graph results
-    graph_content = ""
+
+    # Step 3: Format graph results with sanitization  
+    graph_content = "No relationship information available"
     if graph_triples:
         graph_items = []
         for i, triple in enumerate(graph_triples[:10]):  # Limit to top 10
-            subject = triple.get("subject", "")
-            predicate = triple.get("predicate", "")
-            obj = triple.get("object", "")
+            subject = sanitize_user_input(str(triple.get("subject", "")))
+            predicate = sanitize_user_input(str(triple.get("predicate", "")))
+            obj = sanitize_user_input(str(triple.get("object", "")))
             graph_items.append(f"Relationship {i+1}: {subject} -> {predicate} -> {obj}")
         graph_content = "\n".join(graph_items)
-    
-    # Create synthesis prompt
-    synthesis_prompt = f"""
-    Answer this query using the provided information sources.
-    
-    Query: {query}
-    
-    Available Information:
-    {vector_content if vector_content else "No document information available"}
-    
-    {graph_content if graph_content else "No relationship information available"}
-    
-    Instructions:
-    1. Provide a comprehensive answer using the available information
-    2. Be factual and accurate
-    3. If sources are limited, mention this limitation
-    
-    Answer:"""
-    
+
     try:
-        # Get LLM synthesis
-        response = llm.invoke(synthesis_prompt)
-        answer = response.content.strip()
+        # Step 4: Use secure LLM interaction with input delimiters
+        try:
+            from core.input_sanitization import SYNTHESIS_TEMPLATE
+        except ImportError:
+            from core.input_sanitization import SYNTHESIS_TEMPLATE
         
-        final_answer = answer if answer else "Unable to synthesize answer from available sources"
+        validated_content = secure_llm_interaction(
+            llm=llm,
+            template=SYNTHESIS_TEMPLATE,
+            user_input=query,
+            vector_content=vector_content,
+            graph_content=graph_content
+        )
+        
+        final_answer = validated_content if validated_content else "Unable to synthesize answer from available sources"
         
         logger.info("synthesize_answer_from_sources_completed",
                    answer_length=len(final_answer),
-                   synthesis_successful=bool(answer))
+                   synthesis_successful=bool(validated_content))
         
-        return SynthesisResult(
-            answer=final_answer
-        )
+        return SynthesisResult(answer=final_answer)
         
     except Exception as e:
         logger.warning("answer_synthesis_failed", error=str(e))
@@ -252,9 +267,7 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
                    answer_length=len(fallback_answer),
                    synthesis_successful=False,
                    error=str(e))
-        return SynthesisResult(
-            answer=fallback_answer
-        )
+        return SynthesisResult(answer=fallback_answer)
 
 
 class ValidatorAgent:
@@ -279,8 +292,8 @@ class ValidatorAgent:
         
         try:
             query = state["query"]
-            vector_docs = state.get("vector_docs", [])
-            graph_triples = state.get("graph_triples", [])
+            vector_docs = state.get("vector_docs", []) or []
+            graph_triples = state.get("graph_triples", []) or []
             
             logger.info("validator_processing_results",
                        query_length=len(query),
@@ -389,8 +402,8 @@ class AnswerSynthesisAgent(SecureAgentBase):
         
         try:
             query = state["query"]
-            vector_docs = state.get("vector_docs", [])
-            graph_triples = state.get("graph_triples", [])
+            vector_docs = state.get("vector_docs", []) or []
+            graph_triples = state.get("graph_triples", []) or []
             
             logger.info("answer_synthesis_processing_sources",
                        query_length=len(query),

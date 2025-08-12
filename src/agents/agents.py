@@ -1,5 +1,7 @@
 from typing import List, Dict, Any, Optional
 import re
+import sys
+import os
 from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_core.tools import tool
@@ -8,7 +10,42 @@ from langchain.retrievers import BM25Retriever
 from pydantic.v1 import BaseModel, Field
 from qdrant_client import QdrantClient
 from workflow_state import WorkflowState
+
+# Add the src directory to the path to enable absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+# Try relative imports first, fall back to absolute imports
+# try:
+#     from ..core.observability import observability, traceable, get_traceable_config
+#     from ..core.input_sanitization import (
+#         detect_prompt_injection,
+#         sanitize_user_input,
+#         validate_llm_output,
+#         create_secure_prompt_template,
+#         secure_llm_interaction,
+#         MEDICAL_VALIDATION_TEMPLATE,
+#         QUERY_ANALYSIS_TEMPLATE,
+#         ENTITY_EXTRACTION_TEMPLATE,
+#         DOCUMENT_RERANKING_TEMPLATE
+#     )
+# except ImportError:
+#     # Fall back to absolute imports
 from core.observability import observability, traceable, get_traceable_config
+from core.input_sanitization import (
+    detect_prompt_injection,
+    sanitize_user_input,
+    validate_llm_output,
+    create_secure_prompt_template,
+    secure_llm_interaction,
+    MEDICAL_VALIDATION_TEMPLATE,
+    QUERY_ANALYSIS_TEMPLATE,
+    ENTITY_EXTRACTION_TEMPLATE,
+    DOCUMENT_RERANKING_TEMPLATE
+)
+
 from logging_config import get_logger
 from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
 logger = get_logger("agents")
@@ -69,12 +106,12 @@ class HybridSearchResult(BaseModel):
     search_strategy: str = Field(description="Strategy used: vector_only, bm25_only, or hybrid")
 
 
-# Called by: OrchestratorAgent
 @tool
 @traceable(**get_traceable_config("OrchestratorAgent"))
 def validate_medical_relevance(query: str, llm) -> QueryValidation:
     """
-    Simple validation to check if query is medical/healthcare related using LLM.
+    Secure validation to check if query is medical/healthcare related using LLM.
+    Implements prompt injection protection and output filtering.
     
     Args:
         query: The user query to validate
@@ -85,59 +122,23 @@ def validate_medical_relevance(query: str, llm) -> QueryValidation:
     """
     logger.info("validate_medical_relevance_started", query_length=len(query))
     
-    validation_prompt = """
-You are a medical query classifier. Determine if this query is medical/healthcare related.
-
-MEDICAL/HEALTHCARE queries include:
-- Medical conditions, diseases, symptoms, treatments, diagnostics
-- Anatomy, physiology, medications, procedures, therapies
-- Healthcare systems, medical diagnostics, clinical workflows
-- Patient care, clinical scenarios, medical consultations
-- Medical imaging (X-rays, CT scans, MRI, ultrasound, mammography)
-- Medical informatics, health IT, electronic health records (EHR)
-- Medical databases, healthcare data management, clinical data
-- Medical research, clinical studies, epidemiology
-- Healthcare technology, medical devices, telemedicine
-- Medical education, clinical training, medical curricula
-- Public health, preventive medicine, health policy
-- Medical documentation, clinical notes, medical reports
-- Hospital management, healthcare administration
-- Biomedical engineering in healthcare context
-- Medical AI, clinical decision support systems
-
-SPECIFIC MEDICAL CONTEXTS to always classify as MEDICAL:
-- Hospital-scale databases, medical data systems
-- Chest X-ray databases, medical imaging repositories
-- Clinical data collection and management
-- Healthcare infrastructure and technology
-- Medical dataset construction and analysis
-- Patient information systems
-- Clinical research databases
-
-NON-MEDICAL queries include:
-- General greetings, casual conversation
-- Pure technology/programming (without medical context)
-- Sports, entertainment, travel, cooking, lifestyle
-- Business, finance, general academic topics
-- General software development (non-healthcare)
-- Non-medical databases or systems
-
-IMPORTANT GUIDELINES:
-- If the query mentions medical terms (X-ray, hospital, patient, clinical, diagnostic) → MEDICAL
-- If the query is about medical technology or healthcare IT → MEDICAL
-- If the query combines medical + technology contexts → MEDICAL
-- Medical database construction, medical data analysis → MEDICAL
-- Only classify as NON_MEDICAL if completely unrelated to healthcare
-
-Query: "{query}"
-
-Analyze the query carefully for medical context. Respond with only:
-MEDICAL or NON_MEDICAL
-"""
-
+    # Step 1: Detect prompt injection attempts
+    if detect_prompt_injection(query):
+        logger.warning("prompt_injection_blocked", query_snippet=query[:50])
+        return QueryValidation(
+            is_medical=False,
+            quick_response="I can only provide medical information. Please ask a healthcare-related question."
+        )
+    
+    # Step 2: Use secure LLM interaction with input delimiters
     try:
-        response = llm.invoke(validation_prompt.format(query=query))
-        content = str(response.content).strip().upper()
+        validated_content = secure_llm_interaction(
+            llm=llm,
+            template=MEDICAL_VALIDATION_TEMPLATE,
+            user_input=query
+        )
+        
+        content = validated_content.upper()
         
         # Enhanced pattern matching with better edge case handling
         if content == "MEDICAL":
@@ -161,17 +162,18 @@ MEDICAL or NON_MEDICAL
                 'radiolog', 'patholog', 'cardiolog', 'oncolog', 'neurol'
             ]
             
-            query_lower = query.lower()
+            sanitized_query = sanitize_user_input(query)
+            query_lower = sanitized_query.lower()
             has_medical_keywords = any(keyword in query_lower for keyword in medical_keywords)
             
             if has_medical_keywords:
                 is_medical = True
                 logger.info("medical_validation_fallback_to_keywords", 
-                           query=query[:100], llm_response=content[:50])
+                           query=sanitized_query[:100], llm_response=content[:50])
             else:
                 is_medical = False
                 logger.warning("medical_validation_unexpected_format", 
-                             content=content[:50], query=query[:100])
+                             content=content[:50], query=sanitized_query[:100])
         
         quick_response = None
         if not is_medical:
@@ -199,12 +201,12 @@ MEDICAL or NON_MEDICAL
         )
 
 
-# Called by: OrchestratorAgent
 @tool
 @traceable(**get_traceable_config("OrchestratorAgent"))
 def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnalysis:
     """
-    Dynamic query analysis using LLM for better intent classification.
+    Secure dynamic query analysis using LLM for better intent classification.
+    Implements prompt injection protection and parameterized templates.
     
     Args:
         query: The user query to analyze
@@ -215,46 +217,24 @@ def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnal
     """
     logger.info("analyze_query_characteristics_started", query_length=len(query))
     
-    analysis_prompt = """
-Analyze this medical query and classify its characteristics:
-
-INTENT TYPES:
-- FACTUAL: Seeks specific facts, definitions, symptoms, procedures (What is...? How to...? When to...?)
-- RELATIONAL: Explores connections, relationships, interactions between entities (How does X affect Y? What's the relationship between...? X vs Y in terms of...)
-- ANALYTICAL: Requires comparison, evaluation, analysis of multiple aspects (Compare X and Y, Which is better, Analyze the differences, Evaluate effectiveness)
-
-ENTITY COUNT: Count distinct medical entities, conditions, procedures, demographics, or concepts:
-- Consider: patients, medical findings, conditions, procedures, timeframes, demographics
-- 1: Single primary entity (but may have related sub-entities)
-- 2: Two distinct main entities 
-- 3: Three or more main entities
-
-RELATIONSHIPS: Does the query ask about connections, correlations, or interactions?
-IMPORTANT: Medical queries often have implicit relationships:
-- Patient + findings = relationship (medical history, patient findings)
-- Condition + progression = relationship (disease progression) 
-- Findings + locations = relationship (anatomical relationships)
-- Patient + demographics = relationship (patient characteristics)
-- Time + changes = relationship (progression, evolution)
-
-Look for these relationship indicators:
-- Explicit: "relationship", "connection", "between", "affects", "causes", "leads to"
-- Implicit: "history", "progression", "findings", "characteristics", "demographics", "locations", "dimensions"
-- Temporal: "over time", "progression", "changes", "evolution"
-- Medical context: "patient + findings", "condition + symptoms", "treatment + outcomes"
-
-Query: "{query}"
-
-Respond in this exact format:
-INTENT: [FACTUAL|RELATIONAL|ANALYTICAL]
-ENTITY_COUNT: [1|2|3]
-HAS_RELATIONSHIPS: [true|false]
-REASONING: [Brief explanation focusing on entities and relationships detected]
-"""
-
+    # Step 1: Detect prompt injection attempts
+    if detect_prompt_injection(query):
+        logger.warning("prompt_injection_blocked_in_analysis", query_snippet=query[:50])
+        return QueryAnalysis(
+            intent="FACTUAL",
+            entity_count=1,
+            has_relationships=False
+        )
+    
+    # Step 2: Use secure LLM interaction with input delimiters
     try:
-        response = llm.invoke(analysis_prompt.format(query=query))
-        content = str(response.content).strip()
+        validated_content = secure_llm_interaction(
+            llm=llm,
+            template=QUERY_ANALYSIS_TEMPLATE,
+            user_input=query
+        )
+        
+        content = validated_content
         
         # Parse LLM response
         intent = "FACTUAL"  # Default
@@ -303,12 +283,12 @@ REASONING: [Brief explanation focusing on entities and relationships detected]
         )
 
 
-# Called by: GraphRAGAgent
 @tool
 @traceable(**get_traceable_config("GraphRAGAgent"))
 def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     """
-    Extract entities, relationships, and concepts from medical query.
+    Secure extraction of entities, relationships, and concepts from medical query.
+    Implements prompt injection protection and parameterized templates.
     
     Args:
         query: The medical query to analyze
@@ -318,89 +298,88 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
         EntityExtraction with structured results
     """
     logger.info("extract_entities_from_query_started", query_length=len(query))
-    extraction_prompt = """
-    Extract medical entities, relationships, and concepts from this query.
-
-    ENTITY TYPES:
-    - MEDICAL CONDITIONS: diseases, disorders, pathologies
-    - ANATOMICAL STRUCTURES: body parts, organs  
-    - MEDICAL PROCEDURES: tests, imaging, treatments
-    - CLINICAL FINDINGS: symptoms, signs
-    - CONTEXTUAL: severity, location, timing
-
-    RELATIONSHIP INDICATORS:
-    - CAUSATIVE: "causes", "leads to", "results in"
-    - ASSOCIATED: "associated with", "related to", "linked to"  
-    - DIAGNOSTIC: "indicates", "suggests", "shows"
-    - LOCATIONAL: "located in", "affects", "involves"
-
-    OUTPUT FORMAT (REQUIRED):
-    ENTITIES: [entity1, entity2, entity3]
-    RELATIONSHIPS: [relationship1, relationship2]
-    CONCEPTS: [concept1, concept2]
     
-    Query: {query}
-    """
+    # Step 1: Detect prompt injection attempts
+    if detect_prompt_injection(query):
+        logger.warning("prompt_injection_blocked_in_extraction", query_snippet=query[:50])
+        return EntityExtraction(
+            entities=[],
+            relationships=[],
+            concepts=[],
+            scenario="CONCEPTS_ONLY"
+        )
     
-    # Get LLM extraction
-    response = llm.invoke(extraction_prompt.format(query=query))
-    
-    # Parse response
-    entities, relationships, concepts = [], [], []
-    
+    # Step 2: Use secure LLM interaction with input delimiters
     try:
-        lines = response.content.split('\n')
+        validated_content = secure_llm_interaction(
+            llm=llm,
+            template=ENTITY_EXTRACTION_TEMPLATE,
+            user_input=query
+        )
+        
+        # Parse response
+        entities, relationships, concepts = [], [], []
+        
+        lines = validated_content.split('\n')
         for line in lines:
             line = line.strip()
             if line.startswith('ENTITIES:'):
                 entities_text = line.split('ENTITIES:')[1].strip()
                 if entities_text and entities_text != '[]':
-                    entities = [e.strip().strip('"\'') for e in entities_text.strip('[]').split(',')]
+                    entities = [e.strip().strip('"\'') for e in entities_text.strip('[]').split(',') if e.strip()]
             elif line.startswith('RELATIONSHIPS:'):
                 rel_text = line.split('RELATIONSHIPS:')[1].strip()
                 if rel_text and rel_text != '[]':
-                    relationships = [r.strip().strip('"\'') for r in rel_text.strip('[]').split(',')]
+                    relationships = [r.strip().strip('"\'') for r in rel_text.strip('[]').split(',') if r.strip()]
             elif line.startswith('CONCEPTS:'):
                 concepts_text = line.split('CONCEPTS:')[1].strip()
                 if concepts_text and concepts_text != '[]':
-                    concepts = [c.strip().strip('"\'') for c in concepts_text.strip('[]').split(',')]
+                    concepts = [c.strip().strip('"\'') for c in concepts_text.strip('[]').split(',') if c.strip()]
+        
+        # Determine scenario
+        if len(entities) >= 2 and relationships:
+            scenario = "MULTI_ENTITY_WITH_RELATIONSHIPS"
+        elif len(entities) >= 2:
+            scenario = "MULTI_ENTITY_NO_RELATIONSHIPS"
+        elif len(entities) == 1 and relationships:
+            scenario = "SINGLE_ENTITY_WITH_RELATIONSHIPS"
+        elif len(entities) == 1:
+            scenario = "SINGLE_ENTITY_NO_RELATIONSHIPS"
+        else:
+            scenario = "CONCEPTS_ONLY"
+        
+        logger.info("extract_entities_from_query_completed",
+                   entities_count=len(entities),
+                   relationships_count=len(relationships),
+                   concepts_count=len(concepts),
+                   scenario=scenario,
+                   query_length=len(query))
+        
+        return EntityExtraction(
+            entities=entities,
+            relationships=relationships,
+            concepts=concepts,
+            scenario=scenario
+        )
+        
     except Exception as e:
-        logger.warning("entity_parsing_failed", error=str(e))
-    
-    # Determine scenario
-    if len(entities) >= 2 and relationships:
-        scenario = "MULTI_ENTITY_WITH_RELATIONSHIPS"
-    elif len(entities) >= 2:
-        scenario = "MULTI_ENTITY_NO_RELATIONSHIPS"
-    elif len(entities) == 1 and relationships:
-        scenario = "SINGLE_ENTITY_WITH_RELATIONSHIPS"
-    elif len(entities) == 1:
-        scenario = "SINGLE_ENTITY_NO_RELATIONSHIPS"
-    else:
-        scenario = "CONCEPTS_ONLY"
-    
-    logger.info("extract_entities_from_query_completed",
-               entities_count=len(entities),
-               relationships_count=len(relationships),
-               concepts_count=len(concepts),
-               scenario=scenario,
-               query_length=len(query))
-    
-    return EntityExtraction(
-        entities=entities,
-        relationships=relationships,
-        concepts=concepts,
-        scenario=scenario
-    )
+        logger.warning("entity_extraction_failed", error=str(e), query=query[:100])
+        # Conservative fallback
+        return EntityExtraction(
+            entities=[],
+            relationships=[],
+            concepts=[],
+            scenario="CONCEPTS_ONLY"
+        )
 
 
-# Called by: GraphRAGAgent
 @tool
 @traceable(**get_traceable_config("GraphRAGAgent"))
 def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_query: str = "") -> GraphQueryResult:
     """
     Execute adaptive Cypher queries using Vector DB principles: truly dynamic, self-adapting.
     Analyzes query semantically and builds appropriate filters dynamically.
+    Implements prompt injection protection for query context analysis.
     
     Args:
         extraction: EntityExtraction with entities, relationships, concepts
@@ -410,15 +389,30 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_q
     Returns:
         GraphQueryResult with retrieved triples
     """
+    # Step 0: Implement prompt injection protection for original query
+    if original_query and detect_prompt_injection(original_query):
+        logger.warning("prompt_injection_blocked_in_graph_queries", query_snippet=original_query[:50])
+        return GraphQueryResult(
+            triples=[],
+            queries_executed=0,
+            scenario_used="blocked_injection"
+        )
+    
+    # Sanitize the original query for safe context analysis
+    sanitized_query = sanitize_user_input(original_query) if original_query else ""
+    
     entities = extraction.entities
     triples = []
     
     with neo4j_driver.session() as session:
         try:
-            logger.info("starting_adaptive_graph_query", entities=entities, original_query=original_query[:100])
+            logger.info("starting_adaptive_graph_query", 
+                       entities=entities, 
+                       original_query_length=len(original_query),
+                       sanitized_query_length=len(sanitized_query))
             
-            # Step 1: Dynamic Query Context Analysis (like Vector DB weighting)
-            query_context = _analyze_neo4j_query_context(original_query, entities)
+            # Step 1: Dynamic Query Context Analysis (like Vector DB weighting) with sanitized query
+            query_context = _analyze_neo4j_query_context(sanitized_query, entities)
             
             # Step 2: Handle specific patient ID queries first
             patient_triples = _handle_patient_id_queries(session, entities)
@@ -427,9 +421,9 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_q
                 logger.info("patient_id_query_executed", triples_found=len(patient_triples))
                 return GraphQueryResult(triples=triples[:20], queries_executed=1, scenario_used="PATIENT_ID")
             
-            # Step 3: Build and execute adaptive query
+            # Step 3: Build and execute adaptive query with sanitized query
             if query_context["has_filters"]:
-                adaptive_triples = _execute_adaptive_query(session, query_context, original_query, entities)
+                adaptive_triples = _execute_adaptive_query(session, query_context, sanitized_query, entities)
                 triples.extend(adaptive_triples)
                 logger.info("adaptive_query_executed", 
                            filters=query_context["demographic_filters"], 
@@ -549,7 +543,7 @@ def _handle_patient_id_queries(session, entities: List[str]) -> List[str]:
     
     return triples
 
-def _execute_adaptive_query(session, context: Dict[str, Any], original_query: str, entities: List[str] = None) -> List[str]:
+def _execute_adaptive_query(session, context: Dict[str, Any], original_query: str, entities: Optional[List[str]] = None) -> List[str]:
     """
     Execute adaptive Cypher query based on context analysis.
     Builds query dynamically like Vector DB query construction.
@@ -584,6 +578,8 @@ def _execute_adaptive_query(session, context: Dict[str, Any], original_query: st
     where_clause = " AND ".join(where_conditions) if where_conditions else ""
     
     # Build SELECT clause based on intent
+    description = "patients"  # Default description
+    
     if context["query_intent"] == "aggregation":
         select_clause = "RETURN f.name as finding, count(*) as count ORDER BY count DESC LIMIT 15"
         
@@ -605,7 +601,6 @@ def _execute_adaptive_query(session, context: Dict[str, Any], original_query: st
     else:
         # Default individual finding query
         select_clause = "RETURN p.id as patient_id, p.age_min as age, p.gender as gender, f.name as finding LIMIT 10"
-        description = "relationships"
     
     # Build final query
     final_query = match_clause
@@ -676,112 +671,63 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
                          limit: int = 10) -> HybridSearchResult:
     """
     Perform hybrid search combining vector similarity and BM25 keyword search.
-    
-    Args:
-        query: The search query
-        qdrant_client: Qdrant client instance
-        embeddings: Embeddings instance (HuggingFace or Azure)
-        bm25_retriever: BM25 retriever instance (optional)
-        llm: LLM instance for relevance assessment (optional)
-        collection_name: Name of the Qdrant collection
-        limit: Maximum number of documents to retrieve
-        
-    Returns:
-        HybridSearchResult with combined documents
     """
-    logger.info("perform_hybrid_search_started", 
-               query_length=len(query),
-               limit=limit,
-               has_bm25_retriever=bm25_retriever is not None)
-    vector_docs = []
-    bm25_docs = []
+    # Security check
+    if detect_prompt_injection(query):
+        logger.warning(f"Blocked injection in search: {query[:50]}")
+        return HybridSearchResult(
+            documents=[], vector_count=0, bm25_count=0, 
+            total_found=0, search_strategy="blocked_injection"
+        )
     
-    # Step 1: Vector search
+    sanitized_query = sanitize_user_input(query)
+    vector_docs, bm25_docs = [], []
+    
+    # Vector search
     try:
-        logger.info("vector_search_starting", collection_name=collection_name)
-        query_embedding = embeddings.embed_query(query)
+        query_embedding = embeddings.embed_query(sanitized_query)
         vector_results = qdrant_client.search(
             collection_name=collection_name,
             query_vector=query_embedding,
-            limit=min(limit * 2, 20),  # Get more for better filtering
+            limit=limit * 2,
             with_payload=True,
             with_vectors=False
         )
         
-        for result in vector_results:
-            # Extract metadata directly from payload since it's not nested
-            metadata = {
-                "file_path": result.payload.get("file_path", ""),
-                "created_date": result.payload.get("created_date", ""),
-            }
-            # Include any additional payload items that aren't chunk or the metadata fields
-            for key, value in result.payload.items():
-                if key not in ["chunk", "file_path", "created_date"]:
-                    metadata[key] = value
-            
-            doc = {
+        vector_docs = [
+            {
                 "id": f"vec_{result.id}",
                 "content": result.payload.get("chunk", ""),
-                "metadata": metadata,
+                "metadata": result.payload.get("metadata", {}),
                 "score": float(result.score),
-                "source": "vector_search",
-                "search_type": "vector"
+                "source": "vector_search"
             }
-            vector_docs.append(doc)
-        
-        logger.info("vector_search_completed", documents_found=len(vector_docs))
-                
+            for result in vector_results
+        ]
     except Exception as e:
-        logger.warning("vector_search_failed", error=str(e))
+        logger.warning(f"Vector search failed: {e}")
     
-    # Step 2: BM25 keyword search (if available)
+    # BM25 search
     if bm25_retriever:
         try:
-            logger.info("bm25_search_starting")
-            bm25_results = bm25_retriever.get_relevant_documents(query)
-            
-            for i, doc in enumerate(bm25_results[:limit]):
-                # Use simple rank-based scoring for BM25 results
-                rank_score = max(0.0, 1.0 - (i / max(len(bm25_results), 1)))
-                
-                bm25_doc = {
+            bm25_results = bm25_retriever.get_relevant_documents(sanitized_query)
+            bm25_docs = [
+                {
                     "id": f"bm25_{i}",
                     "content": doc.page_content,
                     "metadata": doc.metadata,
-                    "score": rank_score,
-                    "source": "keyword_search",
-                    "search_type": "bm25"
+                    "score": max(0.0, 1.0 - (i / len(bm25_results))),
+                    "source": "keyword_search"
                 }
-                bm25_docs.append(bm25_doc)
-            
-            logger.info("bm25_search_completed", documents_found=len(bm25_docs))
-                
+                for i, doc in enumerate(bm25_results[:limit])
+            ]
         except Exception as e:
-            logger.warning("bm25_search_failed", error=str(e))
+            logger.warning(f"BM25 search failed: {e}")
     
-    # Step 3: Merge and deduplicate results with adaptive weighting
-    logger.info("merging_search_results", vector_docs=len(vector_docs), bm25_docs=len(bm25_docs))
-    combined_docs = _merge_search_results(vector_docs, bm25_docs, query)
+    # Merge results
+    combined_docs = _merge_search_results(vector_docs, bm25_docs)[:limit]
     
-    # Step 4: Limit final results
-    combined_docs = combined_docs[:limit]
-    
-    # Log hybrid search summary for performance tracking
-    if vector_docs and bm25_docs:
-        logger.info(
-            "hybrid_search_completed",
-            query=query[:100],
-            vector_docs_count=len(vector_docs),
-            bm25_docs_count=len(bm25_docs),
-            final_docs_count=len(combined_docs),
-            strategy="hybrid"
-        )
-    elif vector_docs:
-        logger.info("hybrid_search_completed", strategy="vector_only", docs_count=len(combined_docs))
-    elif bm25_docs:
-        logger.info("hybrid_search_completed", strategy="bm25_only", docs_count=len(combined_docs))
-    
-    # Determine strategy used
+    # Determine strategy
     if vector_docs and bm25_docs:
         strategy = "hybrid"
     elif vector_docs:
@@ -791,9 +737,7 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
     else:
         strategy = "no_results"
     
-    logger.info("perform_hybrid_search_completed",
-               final_documents_count=len(combined_docs),
-               strategy=strategy)
+    logger.info(f"Hybrid search completed: {len(combined_docs)} docs, strategy: {strategy}")
     
     return HybridSearchResult(
         documents=combined_docs,
@@ -804,98 +748,91 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
     )
 
 
-def _merge_search_results(vector_docs: List[Dict], bm25_docs: List[Dict], query: str) -> List[Dict]:
-    """
-    Merge and deduplicate vector and BM25 results with simple equal weighting.
-    """
+def _merge_search_results(vector_docs: List[Dict], bm25_docs: List[Dict]) -> List[Dict]:
+    """Merge and deduplicate vector and BM25 results with optimized weighting."""
     merged_docs = []
     seen_content = set()
     
-    # Simple equal weighting (0.5 each)
-    vector_weight = 0.5
-    bm25_weight = 0.5
-    
-    def create_deduplication_hash(content: str) -> str:
-        """Create content hash for deduplication"""
+    def content_hash(content: str) -> str:
+        """Create simple content hash for deduplication"""
         return re.sub(r'\W+', ' ', content.lower()).strip()[:100]
     
-    # Process vector docs
-    for doc in vector_docs:
-        sig = create_deduplication_hash(doc["content"])
-        if sig not in seen_content:
-            doc["hybrid_score"] = doc["score"] * vector_weight
-            doc["source_primary"] = "vector"
-            merged_docs.append(doc)
-            seen_content.add(sig)
+    # Adaptive weighting: Vector preferred for semantic understanding
+    if vector_docs and bm25_docs:
+        vector_weight, bm25_weight = 0.7, 0.3
+    elif vector_docs:
+        vector_weight, bm25_weight = 1.0, 0.0
+    else:
+        vector_weight, bm25_weight = 0.0, 1.0
     
-    # Process BM25 docs, avoiding duplicates
-    for i, doc in enumerate(bm25_docs):
-        sig = create_deduplication_hash(doc["content"])
-        if sig not in seen_content:
-            # Simple rank-based scoring
-            rank_score = max(0.0, 1.0 - (i / max(len(bm25_docs), 1)))
-            doc["hybrid_score"] = rank_score * bm25_weight
-            doc["source_primary"] = "bm25"
+    # Add vector docs
+    for doc in vector_docs:
+        content_sig = content_hash(doc["content"])
+        if content_sig not in seen_content:
+            doc["hybrid_score"] = doc["score"] * vector_weight
             merged_docs.append(doc)
-            seen_content.add(sig)
+            seen_content.add(content_sig)
+    
+    # Add BM25 docs (avoid duplicates, boost existing)
+    for doc in bm25_docs:
+        content_sig = content_hash(doc["content"])
+        if content_sig not in seen_content:
+            doc["hybrid_score"] = doc["score"] * bm25_weight
+            merged_docs.append(doc)
+            seen_content.add(content_sig)
+        else:
+            # Boost score for documents found by both methods
+            for merged_doc in merged_docs:
+                if content_hash(merged_doc["content"]) == content_sig:
+                    merged_doc["hybrid_score"] += doc["score"] * bm25_weight * 0.5
+                    merged_doc["source"] = "hybrid_both"
+                    break
     
     # Sort by hybrid score
-    merged_docs.sort(key=lambda x: x["hybrid_score"], reverse=True)
-    return merged_docs
+    return sorted(merged_docs, key=lambda x: x["hybrid_score"], reverse=True)
 
 
-# Called by: VectorRAGAgent
 @tool
 @traceable(**get_traceable_config("VectorRAGAgent"))
 def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], llm) -> RerankedResult:
     """
     Rerank documents using LLM for better relevance ordering.
-    
-    Args:
-        query: The original search query
-        documents: List of documents to rerank
-        llm: LLM instance for reranking
-        
-    Returns:
-        RerankedResult with reordered documents
     """
-    logger.info("rerank_documents_started", 
-               query_length=len(query),
-               documents_count=len(documents))
-    
+    # Early exits
     if not documents or len(documents) <= 1:
-        logger.info("rerank_documents_skipped", reason="insufficient_documents")
+        return RerankedResult(documents=documents, reranking_applied=False)
+    
+    if detect_prompt_injection(query):
+        logger.warning(f"Reranking blocked - injection detected: {query[:50]}")
         return RerankedResult(documents=documents, reranking_applied=False)
     
     try:
-        # Create reranking prompt
-        doc_list = "\n".join([f"{i+1}. {doc['content'][:200]}..." for i, doc in enumerate(documents)])
-        
-        rerank_prompt = f"""
-        Query: {query}
-        
-        Rank these documents by relevance (1 = most relevant):
-        
-        {doc_list}
-        
-        Return only numbers separated by commas (e.g., 3,1,4,2):
-        """
+        # Create document list for LLM
+        doc_list = "\n".join([
+            f"{i+1}. {sanitize_user_input(doc.get('content', '')[:150])}"
+            for i, doc in enumerate(documents)
+        ])
         
         # Get LLM ranking
-        response = llm.invoke(rerank_prompt)
-        rankings = [int(x.strip()) - 1 for x in response.content.strip().split(',')]
+        validated_content = secure_llm_interaction(
+            llm=llm,
+            template=DOCUMENT_RERANKING_TEMPLATE,
+            user_input=query,
+            document_list=doc_list
+        )
         
-        # Validate and reorder
+        # Parse and validate rankings
+        rankings = [int(x.strip()) - 1 for x in validated_content.split(',')]
+        
         if len(rankings) == len(documents) and all(0 <= r < len(documents) for r in rankings):
             reranked_docs = [documents[i] for i in rankings]
-            logger.info("rerank_documents_completed", reranking_applied=True)
+            logger.info(f"Documents reranked successfully: {len(reranked_docs)} docs")
             return RerankedResult(documents=reranked_docs, reranking_applied=True)
         
     except Exception as e:
-        logger.warning("reranking_failed", error=str(e))
+        logger.warning(f"Reranking failed: {e}")
     
-    # Return original order if reranking fails
-    logger.info("rerank_documents_completed", reranking_applied=False, reason="reranking_failed")
+    # Return original order on failure
     return RerankedResult(documents=documents, reranking_applied=False)
 
 
@@ -1173,7 +1110,6 @@ class VectorRAGAgent(SecureAgentBase):
             search_strategy = search_result.search_strategy
             vector_count = search_result.vector_count
             bm25_count = search_result.bm25_count
-            precision_score = search_result.precision_score
             
             # Step 2: Optional additional reranking if LLM available and enough documents
             reranking_applied = False
@@ -1201,7 +1137,6 @@ class VectorRAGAgent(SecureAgentBase):
                 search_strategy=search_strategy,
                 vector_count=vector_count,
                 bm25_count=bm25_count,
-                precision_score=precision_score,
                 reranking_applied=reranking_applied,
                 trace_id=trace_id
             )

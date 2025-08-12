@@ -1,7 +1,8 @@
 import os
 import ssl
 import urllib3
-from typing import Dict, Any
+import sys
+from typing import Dict, Any, Optional
 
 # Disable SSL verification globally before any other imports
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -10,6 +11,12 @@ os.environ['CURL_CA_BUNDLE'] = ''
 os.environ['REQUESTS_CA_BUNDLE'] = ''
 os.environ['SSL_VERIFY'] = 'false'
 os.environ['PYTHONHTTPSVERIFY'] = '0'
+
+# Add the src directory to the path to enable absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
 from langgraph.graph import StateGraph, END
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
@@ -22,10 +29,19 @@ from langchain.schema import Document
 from workflow_state import WorkflowState, create_initial_state
 from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent # type: ignore
 from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
+
+# Try relative imports first, fall back to absolute imports
+# try:
+#     from ..core.observability import observability, traceable, get_traceable_config
+#     from ..core.azure_keyvault_manager import get_secret_from_keyvault
+#     from ..core.security_middleware import SecurityMiddleware, SecurityViolationError
+# except ImportError:
+    # Fall back to absolute imports
 from core.observability import observability, traceable, get_traceable_config
+from core.azure_keyvault_manager import get_secret_from_keyvault
+from core.security_middleware import SecurityMiddleware, SecurityViolationError
 from logging_config import configure_logging, get_logger
 from sentence_transformers import SentenceTransformer
-from core.azure_keyvault_manager import get_secret_from_keyvault
 
 # Note: Environment loading is handled by azure_keyvault_manager based on Keyvalue_Enabled flag
 
@@ -41,27 +57,31 @@ logger = get_logger("workflow_engine")
 
 class MultiAgentRAGWorkflow:
     """
-    Simple Multi-Agent RAG Workflow - Happy Path Implementation
+    Secure Multi-Agent RAG Workflow with comprehensive security validation
     
-    This implements the clean happy path flow:
+    This implements a secure RAG workflow with:
     - Orchestrator Agent (routing - owns ALL routing business logic)
-    - Vector-RAG Agent (Qdrant search with optional BM25 hybrid)
+    - Vector-RAG Agent (Qdrant search with BM25 hybrid)
     - Graph-RAG Agent (Neo4j queries)
     - Validator Agent (consistency checking)
     - Answer Synthesis Agent (final composition)
+    - Security Middleware (input validation, sanitization)
     - Observability (metrics and logging)
     
-    BM25 Integration Options:
-    - eager_bm25_init=True: Initialize BM25 at startup (default)
-    - eager_bm25_init=False: Disable BM25, use vector-only search
+    Security Features:
+    - Query length limits (max 1000 characters)
+    - Input sanitization for special characters
+    - Malicious pattern detection
+    - Query complexity analysis
     
-    Focus: Clean, simple implementation without retry complexity.
-    The workflow contains NO business logic - it's a pure orchestration layer.
-    All routing decisions are handled by the OrchestratorAgent.
+    BM25 Integration:
+    - BM25 is always initialized for hybrid search capabilities
+    
+    Focus: Secure implementation with comprehensive input validation.
     """
     
-    def __init__(self, eager_bm25_init: bool = True):
-        self.eager_bm25_init = eager_bm25_init
+    def __init__(self):
+        self.security_middleware = SecurityMiddleware()
         self.initialize_components()
         self.build_workflow()
     
@@ -101,11 +121,6 @@ class MultiAgentRAGWorkflow:
                 },
                 encode_kwargs={'normalize_embeddings': True}
             )
-        
-            # self.embeddings = AzureOpenAIEmbeddings(
-            #     azure_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002"),
-            #     api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
-            # )
             
             # Initialize Qdrant client
             qdrant_url = get_secret_from_keyvault("QDRANT_API_URL")
@@ -132,15 +147,9 @@ class MultiAgentRAGWorkflow:
                 auth=(neo4j_username, neo4j_password)
             )
             
-            # Initialize BM25 retriever (configurable initialization)
-            if self.eager_bm25_init:
-                # Initialize BM25 at startup
-                self.bm25_retriever = self._initialize_bm25_retriever()
-                logger.info("bm25_initialization_strategy", strategy="eager", success=self.bm25_retriever is not None)
-            else:
-                # Skip BM25 initialization - will use vector-only search
-                self.bm25_retriever = None
-                logger.info("bm25_initialization_strategy", strategy="disabled")
+            # Initialize BM25 retriever (always initialize)
+            self.bm25_retriever = self._initialize_bm25_retriever()
+            logger.info("bm25_initialization_strategy", strategy="always", success=self.bm25_retriever is not None)
             
             # Initialize all agents
             self.orchestrator = OrchestratorAgent(llm=self.llm)  # Pass LLM for medical validation
@@ -165,61 +174,40 @@ class MultiAgentRAGWorkflow:
             raise
     
     def _initialize_bm25_retriever(self):
-        """
-        Initialize BM25 retriever from Qdrant documents.
-        Simple implementation that fetches documents and creates BM25 index.
-        """
+        """Initialize BM25 retriever from Qdrant documents."""
         try:
-            # Basic validation
-            if not hasattr(self, 'qdrant_client') or self.qdrant_client is None:
-                logger.error("bm25_initialization_failed", error="qdrant_client not available")
-                return None
-            
             collection_name = get_secret_from_keyvault("QDRANT_COLLECTION") or "documents"
             
             # Fetch documents from Qdrant
-            scroll_result = self.qdrant_client.scroll(
+            points, _ = self.qdrant_client.scroll(
                 collection_name=collection_name,
-                limit=5000,  # Reasonable limit for BM25 indexing
+                limit=1000,
                 with_payload=True,
                 with_vectors=False
             )
             
-            points, _ = scroll_result
-            
-            if not points:
-                logger.warning("no_documents_found_for_bm25", collection=collection_name)
-                return None
-            
             # Convert to LangChain Documents
-            documents = []
-            for point in points:
-                content = point.payload.get("chunk", "") # type: ignore
-                metadata = point.payload.get("metadata", {}) # type: ignore
-                
-                if content.strip():  # Only non-empty content
-                    documents.append(Document(
-                        page_content=content,
-                        metadata=metadata
-                    ))
+            documents = [
+                Document(page_content=point.payload.get("chunk", ""), 
+                        metadata=point.payload.get("metadata", {}))
+                for point in points
+                if point.payload.get("chunk", "").strip()
+            ]
             
             if not documents:
-                logger.warning("no_valid_documents_for_bm25")
+                logger.warning(f"No documents found in collection: {collection_name}")
                 return None
             
             # Create BM25 retriever
             bm25_retriever = BM25Retriever.from_documents(documents)
             bm25_retriever.k = 10
             
-            logger.info("bm25_retriever_initialized", 
-                       document_count=len(documents), 
-                       collection=collection_name)
-            
+            logger.info(f"BM25 initialized with {len(documents)} documents")
             return bm25_retriever
             
         except Exception as e:
-            logger.error("bm25_initialization_failed", error=str(e))
-            return None  # Graceful fallback to vector-only search
+            logger.error(f"BM25 initialization failed: {e}")
+            return None
     
     def build_workflow(self):
         """
@@ -282,7 +270,7 @@ class MultiAgentRAGWorkflow:
         # Compile the workflow
         self.workflow = workflow.compile()
         
-        logger.info("simple_workflow_compiled")
+        logger.info("secure_workflow_compiled")
     
     
     def orchestrator_node(self, state: WorkflowState) -> WorkflowState:
@@ -325,67 +313,90 @@ class MultiAgentRAGWorkflow:
         result = self.synthesizer.synthesize_answer(state)
         return result
     
-    @traceable(**get_traceable_config("workflow_execution"))
+    @traceable(**get_traceable_config("secure_workflow_execution"))
     def run(self, query: str) -> str:
         """
-        Main method to run the workflow with a query
+        Main method to run the secure workflow with a query
         
         Args:
             query: The user's question/query
             
         Returns:
             str: The final synthesized answer
+            
+        Raises:
+            SecurityViolationError: If security validation fails
         """
         try:
-            # Create initial state
-            initial_state = create_initial_state(query)
+            # Step 1: Security validation and sanitization
+            sanitized_query = self.security_middleware.validate_and_sanitize_query(query)
             
-            logger.info("workflow_started", query_length=len(query), session_id=initial_state.get("session_id", "unknown"))
+            logger.info("secure_workflow_started", 
+                       original_query_length=len(query),
+                       sanitized_query_length=len(sanitized_query))
             
-            # Run the workflow
+            # Step 2: Create initial state with sanitized query
+            initial_state = create_initial_state(sanitized_query)
+            
+            # Step 3: Run the workflow
             result = self.workflow.invoke(initial_state)
             
-            # Extract final answer - handle both medical and non-medical cases
+            # Step 4: Extract final answer - handle both medical and non-medical cases
             final_answer = result.get("final_answer")  # Non-medical queries
             if not final_answer:
                 final_answer = result.get("answer")  # Medical queries
             if not final_answer:
                 final_answer = "No answer generated"
             
-            logger.info("workflow_completed", answer_length=len(final_answer))
+            logger.info("secure_workflow_completed", 
+                       answer_length=len(final_answer))
             
             return final_answer
             
+        except SecurityViolationError as e:
+            logger.error("security_violation_in_workflow", 
+                        error=str(e))
+            raise
         except Exception as e:
-            logger.error("workflow_execution_failed", error=str(e))
+            logger.error("secure_workflow_execution_failed", error=str(e))
             raise
 
 
 def main():
     """
-    Main function to demonstrate the workflow
+    Main function to demonstrate the secure workflow
     """
     try:
-        # Initialize the workflow
+        # Initialize the secure workflow
         workflow = MultiAgentRAGWorkflow()
         
-        # Example query
-        #query ="what is .net?"
-        #query = "What is NIH Chest X-ray?"
-        query ="What is SNOMED-CT Concepts?"
-        #query ="Describe the Construction of Hospital-scale Chest X-ray Database?"
-        #query ="Provide concerns about the image label accuracy in medical"
-        #query ="Tell me about the medical history of patient ID 1, including all findings and their progression"
-        #query ="Tell me about the medical history of patient ID 1, including all findings and their progression?"
-        print(f"Query: {query}")
-        print("=" * 50)
+        # Example queries with different security scenarios
+        test_queries = [
+            #"What is SNOMED-CT Concepts?",  # Normal query
+            "What is NIH Chest X-ray?",  # Normal query
+            #"SELECT * FROM users WHERE id=1; DROP TABLE users;",  # SQL injection attempt
+            #"What are the <script>alert('xss')</script> medical findings?",  # XSS attempt
+            #"What is {}[]();--/**/\x00medical data?",  # Special characters test
+        ]
         
-        # Run the workflow
-        answer = workflow.run(query)
-        
-        print("Final Answer:")
-        print(answer)
-        
+        for i, query in enumerate(test_queries, 1):
+            try:
+                print(f"\n--- Test Query {i} ---")
+                print(f"Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+                print("=" * 50)
+                
+                # Run the workflow with security validation
+                answer = workflow.run(query)
+                
+                print("✅ Query processed successfully!")
+                print("Final Answer:")
+                print(answer)
+                
+            except SecurityViolationError as e:
+                print(f"❌ Security Violation: {e}")
+            except Exception as e:
+                print(f"❌ Error: {e}")
+                
     except Exception as e:
         logger.error("main_execution_failed", error=str(e))
         print(f"Error: {e}")

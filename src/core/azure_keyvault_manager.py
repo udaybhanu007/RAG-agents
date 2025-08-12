@@ -132,46 +132,6 @@ def get_secret_from_keyvault(secret_name: str) -> Optional[str]:
         return None
 
 
-def get_secrets_from_keyvault(secret_names: List[str]) -> Dict[str, Optional[str]]:
-    """Get multiple secrets from Azure Key Vault or environment based on Keyvalue_Enabled flag."""
-    
-    # If Key Vault is disabled, read from environment (already loaded from .env.dev)
-    if not KEYVALUE_ENABLED:
-        final_results = {}
-        for name in secret_names:
-            actual_value = os.environ.get(name, name)         
-            if actual_value:
-                logger.info(f"Retrieved secret '{actual_value}' from environment (.env.dev)")
-                final_results[name] = actual_value
-            else:
-                logger.warning(f"Secret '{name}' not found in environment")
-                final_results[name] = None
-        return final_results
-    
-    # Key Vault is enabled - use Azure Key Vault
-    try:
-        manager = get_keyvault_manager()
-        # Convert secret names using environment variables if available
-        actual_secret_names = {name: os.environ.get(name, name) for name in secret_names}
-        results = manager.get_multiple_secrets(list(actual_secret_names.values()))
-        
-        # Map back to original names for return
-        final_results = {}
-        for original_name, actual_name in actual_secret_names.items():
-            secret_value = results.get(actual_name)
-            if secret_value:
-                logger.info(f"Retrieved secret '{actual_name}' from Azure Key Vault")
-                final_results[original_name] = secret_value
-            else:
-                logger.warning(f"Secret '{actual_name}' not found in Azure Key Vault")
-                final_results[original_name] = None
-        
-        return final_results
-    except Exception as e:
-        logger.error(f"Error retrieving secrets from Key Vault: {e}")
-        return {name: None for name in secret_names}
-
-
 def list_keyvault_secrets() -> List[str]:
     """List all available secrets in the Key Vault."""
     try:
@@ -182,36 +142,10 @@ def list_keyvault_secrets() -> List[str]:
         return []
 
 
-# def debug_environment_variables():
-#     """Debug function to show loaded environment variables."""
-#     print("\nDEBUG: Environment Variables Status:")
-#     print("-" * 50)
-    
-#     relevant_vars = [k for k in os.environ.keys() if any(keyword in k.upper() for keyword in 
-#                     ['QDRANT', 'AZURE', 'NEO4J', 'KEYVALUE', 'OPENAI'])]
-    
-#     if relevant_vars:
-#         for var in sorted(relevant_vars):
-#             value = os.environ[var]
-#             display_value = value[:30] + "..." if len(value) > 30 else value
-#             print(f"  {var} = {display_value}")
-#     else:
-#         print("  No relevant environment variables found")
-    
-#     print(f"\nTotal environment variables: {len(os.environ)}")
-#     print(f"Project root path: {project_root}")
-#     print(f".env file exists: {os.path.exists(env_file_path)}")
-#     print(f".env.dev file exists: {os.path.exists(env_dev_file_path)}")
-
-
 # def main():
 #     """Test Azure Key Vault access with conditional environment fallback."""
 #     print("Azure Key Vault Test with Conditional Configuration")
 #     print("=" * 55)
-    
-#     # Show debug information first
-#     debug_environment_variables()
-    
 #     print(f"\nConfiguration Status:")
 #     print("-" * 40)
 #     print(f"Keyvalue_Enabled: {KEYVALUE_ENABLED}")

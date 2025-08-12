@@ -49,14 +49,5 @@ def get_traceable_config(agent_name: str) -> Dict[str, Any]:
     }
 
 
-class ObservabilityManager:
-    """Manager for observability operations - simplified for LangSmith-only monitoring"""
-    pass
-
-
-# Create global observability instance
-observability = ObservabilityManager()
-
-
 # Export traceable for easy import
-__all__ = ["traceable", "get_traceable_config", "LANGSMITH_CONFIG", "observability"]
+__all__ = ["traceable", "get_traceable_config", "LANGSMITH_CONFIG"]

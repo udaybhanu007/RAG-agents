@@ -6,34 +6,21 @@ from langchain_openai import AzureChatOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
 from langchain_core.tools import tool
 from langchain_core.documents import Document
-from langchain.retrievers import BM25Retriever
+from langchain_community.retrievers import BM25Retriever
 from pydantic.v1 import BaseModel, Field
 from qdrant_client import QdrantClient
 from workflow_state import WorkflowState
-
+from tool_governance import (
+    ToolRegistry, ToolMetadata, AgentRole, tool_registry,
+    AccessDeniedError, SecureAgentBase, state_manager
+)
 # Add the src directory to the path to enable absolute imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
-# Try relative imports first, fall back to absolute imports
-# try:
-#     from ..core.observability import observability, traceable, get_traceable_config
-#     from ..core.input_sanitization import (
-#         detect_prompt_injection,
-#         sanitize_user_input,
-#         validate_llm_output,
-#         create_secure_prompt_template,
-#         secure_llm_interaction,
-#         MEDICAL_VALIDATION_TEMPLATE,
-#         QUERY_ANALYSIS_TEMPLATE,
-#         ENTITY_EXTRACTION_TEMPLATE,
-#         DOCUMENT_RERANKING_TEMPLATE
-#     )
-# except ImportError:
-#     # Fall back to absolute imports
-from core.observability import observability, traceable, get_traceable_config
+from core.observability import traceable, get_traceable_config
 from core.input_sanitization import (
     detect_prompt_injection,
     sanitize_user_input,
@@ -47,7 +34,10 @@ from core.input_sanitization import (
 )
 
 from logging_config import get_logger
-from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
+from tool_governance import (
+    ToolRegistry, ToolMetadata, AgentRole, tool_registry, 
+    AccessDeniedError, SecureAgentBase, state_manager
+)
 logger = get_logger("agents")
 
 
@@ -948,6 +938,9 @@ class OrchestratorAgent(SecureAgentBase):
                 state["routing_analysis"] = "Non-medical query detected"
                 state["final_answer"] = validation_result.quick_response
                 
+                # Update state with metadata for non-medical route
+                state = self.update_state_and_transition(state, "none")
+                
                 logger.info(
                     "orchestrator_non_medical_query",
                     query_length=len(query),
@@ -977,11 +970,25 @@ class OrchestratorAgent(SecureAgentBase):
             state["route"] = route
             state["routing_analysis"] = analysis
             
+            # Determine next agent for state transition
+            if route == "vector":
+                next_agent = "vector_rag"
+            elif route == "graph":
+                next_agent = "graph_rag"
+            elif route == "both":
+                next_agent = "vector_rag"  # Start with vector for "both" route
+            else:
+                next_agent = "none"
+            
+            # Update state with metadata and validate transition
+            state = self.update_state_and_transition(state, next_agent)
+            
             logger.info(
                 "orchestrator_medical_routing_completed",
                 route=route,
                 reasoning=reasoning,
                 analysis=analysis,
+                next_agent=next_agent,
                 query_length=len(query),
                 trace_id=trace_id
             )
@@ -1131,6 +1138,16 @@ class VectorRAGAgent(SecureAgentBase):
             # Update state
             state["vector_docs"] = documents
             
+            # Determine next step based on route
+            route = state.get("route", "vector")
+            if route == "both":
+                next_agent = "graph_rag"  # Continue to graph for comprehensive search
+            else:
+                next_agent = "validator"  # Go directly to validation
+            
+            # Update state with metadata and validate transition
+            state = self.update_state_and_transition(state, next_agent)
+            
             logger.info(
                 "vector_rag_retrieve_documents_completed",
                 documents_retrieved=len(documents),
@@ -1138,6 +1155,7 @@ class VectorRAGAgent(SecureAgentBase):
                 vector_count=vector_count,
                 bm25_count=bm25_count,
                 reranking_applied=reranking_applied,
+                next_agent=next_agent,
                 trace_id=trace_id
             )
             
@@ -1190,14 +1208,22 @@ class GraphRAGAgent(SecureAgentBase):
             # Step 2: Execute graph queries based on extraction
             logger.info("graph_rag_executing_graph_queries",
                        entities_extracted=len(extraction_result.entities),
-                       scenario=extraction_result.scenario)
+                       scenario=extraction_result.scenario,
+                       trace_id=trace_id)
             graph_result = self.invoke_tool("execute_graph_queries", {
                 "extraction": extraction_result,
-                "neo4j_driver": self.driver
+                "neo4j_driver": self.driver,
+                "original_query": query
             })
             
             # Update state
             state["graph_triples"] = graph_result.triples
+            
+            # Always transition to validator after graph processing
+            next_agent = "validator"
+            
+            # Update state with metadata and validate transition
+            state = self.update_state_and_transition(state, next_agent)
             
             logger.info(
                 "graph_rag_extract_and_query_completed",
@@ -1207,6 +1233,7 @@ class GraphRAGAgent(SecureAgentBase):
                 scenario_used=extraction_result.scenario,
                 queries_executed=graph_result.queries_executed,
                 triples_retrieved=len(graph_result.triples),
+                next_agent=next_agent,
                 trace_id=trace_id
             )
             

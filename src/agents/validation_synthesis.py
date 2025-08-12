@@ -15,11 +15,11 @@ if src_dir not in sys.path:
 
 # Try relative imports first, fall back to absolute imports
 try:
-    from ..core.observability import observability, traceable, get_traceable_config
+    from ..core.observability import  traceable, get_traceable_config
     from ..core.input_sanitization import detect_prompt_injection, sanitize_user_input, validate_llm_output, secure_llm_interaction
 except ImportError:
     # Fall back to absolute imports
-    from core.observability import observability, traceable, get_traceable_config
+    from core.observability import  traceable, get_traceable_config
     from core.input_sanitization import detect_prompt_injection, sanitize_user_input, validate_llm_output, secure_llm_interaction
 
 from logging_config import get_logger

@@ -30,14 +30,7 @@ from workflow_state import WorkflowState, create_initial_state
 from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent # type: ignore
 from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
 
-# Try relative imports first, fall back to absolute imports
-# try:
-#     from ..core.observability import observability, traceable, get_traceable_config
-#     from ..core.azure_keyvault_manager import get_secret_from_keyvault
-#     from ..core.security_middleware import SecurityMiddleware, SecurityViolationError
-# except ImportError:
-    # Fall back to absolute imports
-from core.observability import observability, traceable, get_traceable_config
+from core.observability import traceable, get_traceable_config
 from core.azure_keyvault_manager import get_secret_from_keyvault
 from core.security_middleware import SecurityMiddleware, SecurityViolationError
 from logging_config import configure_logging, get_logger
@@ -111,7 +104,7 @@ class MultiAgentRAGWorkflow:
             def patched_request(self, method, url, **kwargs):
                 kwargs.setdefault('verify', False)
                 return original_request(self, method, url, **kwargs)
-            requests.Session.request = patched_request
+            requests.Session.request = patched_request # type: ignore
             
             self.embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-MiniLM-L6-v2",
@@ -188,10 +181,10 @@ class MultiAgentRAGWorkflow:
             
             # Convert to LangChain Documents
             documents = [
-                Document(page_content=point.payload.get("chunk", ""), 
-                        metadata=point.payload.get("metadata", {}))
+                Document(page_content=point.payload.get("chunk", ""),  # type: ignore
+                        metadata=point.payload.get("metadata", {})) # type: ignore
                 for point in points
-                if point.payload.get("chunk", "").strip()
+                if point.payload.get("chunk", "").strip() # type: ignore
             ]
             
             if not documents:

@@ -4,6 +4,7 @@ from enum import Enum
 import logging
 import uuid
 from datetime import datetime
+from workflow_state import WorkflowState
 
 class AgentRole(Enum):
     ORCHESTRATOR = "orchestrator"
@@ -63,7 +64,7 @@ class ToolRegistry:
         # Execute tool
         try:
             self.logger.info(f"Executing tool: {tool_name} by {agent_role.value} (ID: {agent_id})")
-            return self.tools[tool_name].invoke(params)
+            return self.tools[tool_name].invoke(params) # type: ignore
         except Exception as e:
             self.logger.error(f"Tool execution failed: {tool_name} by {agent_id} - {str(e)}")
             raise
@@ -113,12 +114,13 @@ class SimpleStateManager:
         
         return is_valid
     
-    def add_simple_metadata(self, state: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
+    def add_simple_metadata(self, state: WorkflowState, agent_id: str) -> WorkflowState:
         """Add simple tracking metadata to state"""
+        existing_metadata = state.get('_metadata') or {}
         state['_metadata'] = {
             'last_modified_by': agent_id,
             'last_modified_at': datetime.utcnow().isoformat(),
-            'modification_count': state.get('_metadata', {}).get('modification_count', 0) + 1
+            'modification_count': existing_metadata.get('modification_count', 0) + 1
         }
         return state
 
@@ -167,9 +169,9 @@ class SecureAgentBase:
             self.logger.error(f"Tool execution error for {self.role.value}: {str(e)}")
             raise
     
-    def update_state_and_transition(self, state: Dict[str, Any], next_agent: str) -> Dict[str, Any]:
+    def update_state_and_transition(self, state: WorkflowState, next_agent: str) -> WorkflowState:
         """Update state with simple metadata and validate transition"""
-        trace_id = state.get('trace_id', 'unknown')
+        trace_id = state.get('trace_id') or 'unknown'
         
         # Simple transition validation
         if not state_manager.validate_state_transition(self.role.value, next_agent, trace_id):

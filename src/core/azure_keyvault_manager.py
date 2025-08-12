@@ -1,9 +1,6 @@
 import os
 import logging
 from typing import Optional, Dict, List
-from azure.keyvault.secrets import SecretClient
-from azure.identity import DefaultAzureCredential
-from azure.core.exceptions import ClientAuthenticationError
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -38,6 +35,17 @@ class AzureKeyVaultManager:
     """Azure Key Vault manager using Azure CLI authentication."""
     
     def __init__(self, vault_url: Optional[str] = None):
+        # Import Azure modules only when Key Vault is being used
+        try:
+            from azure.keyvault.secrets import SecretClient
+            from azure.identity import DefaultAzureCredential
+            from azure.core.exceptions import ClientAuthenticationError
+        except ImportError as e:
+            raise ImportError(
+                "Azure Key Vault dependencies not installed. Please install them with: "
+                "pip install azure-keyvault-secrets azure-identity azure-storage-blob"
+            ) from e
+        
         self.vault_url = vault_url or os.environ.get("AZURE_KEY_VAULT_URL")
         if not self.vault_url:
             raise ValueError("AZURE_KEY_VAULT_URL must be set in environment or provided as parameter")
@@ -90,6 +98,8 @@ def get_keyvault_manager() -> AzureKeyVaultManager:
     """Get or create a Key Vault manager instance."""
     global _keyvault_manager
     if _keyvault_manager is None:
+        if not KEYVALUE_ENABLED:
+            raise RuntimeError("Key Vault is disabled. Cannot create Key Vault manager.")
         _keyvault_manager = AzureKeyVaultManager()
     return _keyvault_manager
 

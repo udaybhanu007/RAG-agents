@@ -82,15 +82,16 @@ class NarrativeChunker:
     def chunk(self, file_path: str, content: str):
         return self.unstructured_ingestor.ingest_unstructured_document(file_path, content)
 
-class EntityRelationshipExtractor:
-    def __init__(self, structured_ingestor):
-        self.structured_ingestor = structured_ingestor
-    def extract(self, full_text: str, tables):
-        structured_data = self.structured_ingestor.extract_structured_for_graph_db(full_text, tables)
-        entities = self.structured_ingestor.extract_entities(full_text)
-        relationships = self.structured_ingestor.extract_relationships(full_text, entities)
-        #ingest_structured_document
-        return structured_data, entities, relationships
+# class EntityRelationshipExtractor:
+#     def __init__(self, structured_ingestor):
+#         self.structured_ingestor = structured_ingestor
+#     def extract(self, full_text: str, tables):
+#         # structured_data = self.structured_ingestor.extract_structured_for_graph_db(full_text, tables)
+#         #s = self.structured_ingestor.ingest_structured_document(full_text, tables)
+#         # entities = self.structured_ingestor.extract_entities(full_text)
+#         # relationships = self.structured_ingestor.extract_relationships(full_text, entities)
+#         #ingest_structured_document
+#         return structured_data, entities, relationships
 
 class MixedDocumentIngestor:
     def __init__(self, structured_ingestor=None, unstructured_ingestor=None):
@@ -98,24 +99,25 @@ class MixedDocumentIngestor:
         self.unstructured_ingestor = unstructured_ingestor or UnstructuredDocumentIngestor()
         self.pdf_extractor = PDFExtractor(self.structured_ingestor)
         self.narrative_chunker = NarrativeChunker(self.unstructured_ingestor)
-        self.entity_rel_extractor = EntityRelationshipExtractor(self.structured_ingestor)
+        #self.entity_rel_extractor = EntityRelationshipExtractor(self.structured_ingestor)
 
     def ingest_mixed_document(self, file_path: str, content: Optional[str] = None) -> ExtractedResponse:
         try:
             raw_content = self.pdf_extractor.extract(file_path, content)
             full_text = raw_content['text']
-            tables = raw_content['tables']
+            tables = raw_content['tables']              
             # word_count = raw_content['word_count']
             # table_count = raw_content['table_count']
             unstructured_chunks = self.narrative_chunker.chunk(file_path, full_text)
-            structured_data, entities, relationships = self.entity_rel_extractor.extract(full_text, tables)
+            #structured_data, entities, relationships = self.entity_rel_extractor.extract(file_path, tables)
+            extractedResponse = self.structured_ingestor.ingest_structured_document(file_path,"")
            
             return ExtractedResponse(
                 full_text=full_text,
                 unstructured_chunks=unstructured_chunks,
-                structured_data=structured_data,
-                entities=entities,
-                relationships=relationships,
+                structured_data=extractedResponse.structured_data,
+                entities=extractedResponse.entities,
+                relationships=extractedResponse.relationships,
                 metadata={}
             )
         except Exception as e:

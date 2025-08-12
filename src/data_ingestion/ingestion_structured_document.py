@@ -1,7 +1,7 @@
 import re
 import json
 import pymupdf4llm
-#import pdfplumber
+import pdfplumber
 import pandas as pd
 import os
 from pathlib import Path
@@ -31,9 +31,37 @@ class StructuredDocumentIngestor:
         Ingest a structured document (CSV, Excel, XML, JSON, etc.) and return ExtractedResponse.
         """
         print(f"[Structured Ingestion] Processing: {file_path}")
-        # For demonstration, treat the content as the full text and parse entities, relationships, and structured data
+      
         full_text = content or ""
         tables = []  # You can add logic to extract tables from content if needed
+        extracted = {
+            'tables': [],
+            'table_count': 0
+        }
+    
+        with pdfplumber.open(file_path) as pdf:
+            for page_num, page in enumerate(pdf.pages, 1):
+                page_tables = page.extract_tables()
+                for table_idx, table in enumerate(page_tables):
+                    if table and len(table) > 1:
+                        try:
+                            df = pd.DataFrame(table[1:], columns=table[0])
+                            df = df.fillna('')
+                            table_text = self.format_table_for_ingestion(df, page_num, table_idx)
+                            tables.append({
+                                'page': page_num,
+                                'index': table_idx,
+                                'content': table_text,
+                                'rows': len(df),
+                                'columns': len(df.columns)
+                            })
+                        except Exception as e:
+                            print(f"   ⚠️  Warning: Failed to process table on page {page_num}: {e}")
+        extracted['tables'] = tables
+        extracted['table_count'] = len(tables)
+
+
+
         structured_data = self.extract_structured_for_graph_db(full_text, tables)
         entities = self.extract_entities(full_text)
         relationships = self.extract_relationships(full_text, entities)

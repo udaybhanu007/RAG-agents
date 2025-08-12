@@ -1,20 +1,26 @@
 
-COLLECTION_NAME = "poc_medical_research_doc"
-
-
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .ExtractedResponse import ExtractedResponse
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from sentence_transformers import SentenceTransformer
 from .chunking_unstructured import create_chunk
 from .utility_functions import UtilityFunctions
+import sys
 import os
+import sys
+
+# Add the src directory to the path to enable absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from ..core.azure_keyvault_manager import get_secret_from_keyvault
 except ImportError:
-    pass
+    from core.azure_keyvault_manager import get_secret_from_keyvault
 
 class QdrantDBManager:
     """Manages Qdrant client and collection operations."""
@@ -71,16 +77,41 @@ class DocumentChunker:
                 chunk_str = chunk
             from datetime import datetime
             chunk_id = idx + 1
-            # Create a stable unique UUID for the chunk using file_path and chunk_id
-            unique_str = f"{file_path}:{chunk_id}"
+            
+            # Extract just the filename from file_path (remove directory path)
+            source_filename = os.path.basename(file_path)
+            
+            # Generate blob URL from Key Vault secrets
+            storage_account = get_secret_from_keyvault("AZURE_STORAGE_ACCOUNT_NAME")
+            container_name = get_secret_from_keyvault("AZURE_BLOB_CONTAINER_NAME") 
+
+            blob_url = None
+            if storage_account and container_name:
+                blob_url = f"https://{storage_account}.blob.core.windows.net/{container_name}/{source_filename}"
+                
+            # Create a stable unique UUID for the chunk using source_filename and chunk_id
+            unique_str = f"{source_filename}:{chunk_id}"
             chunk_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, unique_str))
+            
             chunk_metadata = {
-                "file_path": file_path,
+                "file_path": source_filename,
                 "chunk_id": chunk_id,
                 "chunk_word_count": len(chunk_str.split()),
                 "created_date": datetime.now().strftime("%Y-%m-%d"),
                 "id": chunk_uuid
             }
+            
+            # Add blob URL and source info if available
+            if blob_url:
+                chunk_metadata.update({
+                    "blob_url": blob_url,
+                    "container_name": container_name,
+                    "storage_account": storage_account,
+                    "source_type": "azure_blob"
+                })
+            else:
+                chunk_metadata["source_type"] = "local_file"
+                
             chunk_list.append({"chunk": chunk_str, "metadata": chunk_metadata})
         print(f"   📝 Extracted {len(chunk_list)} narrative chunks using paragraph-based chunking.")
         return chunk_list
@@ -94,16 +125,24 @@ class EmbeddingManager:
 
 class UnstructuredDocumentIngestor:
     def __init__(self, api_url=None, api_key=None):
-        # Load from environment or .env file
-        self.collection_name = COLLECTION_NAME
-        self.api_url = api_url or os.environ.get("QDRANT_API_URL")
-        self.api_key = api_key or os.environ.get("QDRANT_API_KEY")
+        # Load from Azure Key Vault
+        self.collection_name = get_secret_from_keyvault("COLLECTION_NAME") 
+        
+        # Get secrets from Key Vault
+        self.api_url = api_url or get_secret_from_keyvault("QDRANT_API_URL")
+        self.api_key = api_key or get_secret_from_keyvault("QDRANT_API_KEY")
+        
         if not self.api_url or not self.api_key:
-            raise ValueError("QDRANT_API_URL and QDRANT_API_KEY must be set in the environment or .env file.")
+            raise ValueError(
+                "QDRANT_API_URL and QDRANT_API_KEY must be available from Azure Key Vault.\n"
+                "Required secrets: 'qdrant-api-url', 'qdrant-api-key'\n"
+                "Make sure you are logged in with Azure CLI and have access to the Key Vault."
+            )
+        
         self.chunker = DocumentChunker()
         self._collection_initialized = False
 
-    def ingest_unstructured_document(self, file_path: str, content : str, classification: str = "un-structured") -> 'ExtractedResponse': # type: ignore
+    def ingest_unstructured_document(self, file_path: str, content : str, classification: str = "un-structured", blob_metadata: Optional[Dict[str, Any]] = None) -> 'ExtractedResponse': # type: ignore
         # Ensure Qdrant collection exists before chunking/ingestion
         self.qdrant_manager = QdrantDBManager(self.api_url, self.api_key, self.collection_name)  # type: ignore
         self.embedding_manager = EmbeddingManager()      

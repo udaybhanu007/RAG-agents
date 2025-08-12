@@ -57,6 +57,9 @@ class WorkflowState(TypedDict):
     # Observability data
     trace_id: Optional[str]
     metrics: Optional[Dict[str, Any]]
+    
+    # Internal metadata for state management
+    _metadata: Optional[Dict[str, Any]]
 
 
 def create_initial_state(query: str, session_id: Optional[str] = None) -> WorkflowState:
@@ -87,5 +90,6 @@ def create_initial_state(query: str, session_id: Optional[str] = None) -> Workfl
         errors=[],
         status="processing",
         trace_id=f"trace_{int(time.time())}_{hash(query) % 10000}",
-        metrics={}
+        metrics={},
+        _metadata=None
     )

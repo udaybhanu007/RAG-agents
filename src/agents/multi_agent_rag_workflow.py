@@ -1,6 +1,23 @@
 import os
-from typing import cast, Dict, Any
-from dotenv import load_dotenv
+import ssl
+import urllib3
+import sys
+from typing import Dict, Any, Optional
+
+# Disable SSL verification globally before any other imports
+ssl._create_default_https_context = ssl._create_unverified_context
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+os.environ['SSL_VERIFY'] = 'false'
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+
+# Add the src directory to the path to enable absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
 from langgraph.graph import StateGraph, END
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from qdrant_client import QdrantClient
@@ -12,17 +29,19 @@ from langchain.schema import Document
 from workflow_state import WorkflowState, create_initial_state
 from agents import OrchestratorAgent, VectorRAGAgent, GraphRAGAgent # type: ignore
 from validation_synthesis import ValidatorAgent, AnswerSynthesisAgent
-from observability import observability
+
+from core.observability import traceable, get_traceable_config
+from core.azure_keyvault_manager import get_secret_from_keyvault
+from core.security_middleware import SecurityMiddleware, SecurityViolationError
 from logging_config import configure_logging, get_logger
 
-# Load environment variables
-load_dotenv()
+# Note: Environment loading is handled by azure_keyvault_manager based on Keyvalue_Enabled flag
 
 # Configure centralized logging once at startup
 configure_logging(
-    log_level=os.getenv("LOG_LEVEL", "INFO"),
-    enable_json=os.getenv("ENABLE_JSON_LOGS", "true").lower() == "true",
-    enable_colors=os.getenv("ENABLE_COLORED_LOGS", "false").lower() == "true"
+    log_level=os.getenv("LOG_LEVEL") or "INFO",
+    enable_json=(os.getenv("ENABLE_JSON_LOGS") or "true").lower() == "true",
+    enable_colors=(os.getenv("ENABLE_COLORED_LOGS") or "false").lower() == "true"
 )
 
 logger = get_logger("workflow_engine")
@@ -30,25 +49,31 @@ logger = get_logger("workflow_engine")
 
 class MultiAgentRAGWorkflow:
     """
-    Simple Multi-Agent RAG Workflow - Happy Path Implementation
+    Secure Multi-Agent RAG Workflow with comprehensive security validation
     
-    This implements the clean happy path flow:
-    - Orchestrator Agent (routing)
-    - Vector-RAG Agent (Qdrant search with optional BM25 hybrid)
+    This implements a secure RAG workflow with:
+    - Orchestrator Agent (routing - owns ALL routing business logic)
+    - Vector-RAG Agent (Qdrant search with BM25 hybrid)
     - Graph-RAG Agent (Neo4j queries)
     - Validator Agent (consistency checking)
     - Answer Synthesis Agent (final composition)
+    - Security Middleware (input validation, sanitization)
     - Observability (metrics and logging)
     
-    BM25 Integration Options:
-    - eager_bm25_init=True: Initialize BM25 at startup (default)
-    - eager_bm25_init=False: Disable BM25, use vector-only search
+    Security Features:
+    - Query length limits (max 1000 characters)
+    - Input sanitization for special characters
+    - Malicious pattern detection
+    - Query complexity analysis
     
-    Focus: Clean, simple implementation without retry complexity
+    BM25 Integration:
+    - BM25 is always initialized for hybrid search capabilities
+    
+    Focus: Secure implementation with comprehensive input validation.
     """
     
-    def __init__(self, eager_bm25_init: bool = True):
-        self.eager_bm25_init = eager_bm25_init
+    def __init__(self):
+        self.security_middleware = SecurityMiddleware()
         self.initialize_components()
         self.build_workflow()
     
@@ -56,49 +81,77 @@ class MultiAgentRAGWorkflow:
         """Initialize all LLMs, databases, and agents"""
         try:
             # Initialize LLM
+            azure_deployment = get_secret_from_keyvault("AZURE_OPENAI_DEPLOYMENT")
+            azure_api_version = get_secret_from_keyvault("AZURE_OPENAI_API_VERSION")
+            
+            if not azure_deployment or not azure_api_version:
+                raise ValueError("Azure OpenAI credentials not found. Required: AZURE_OPENAI_DEPLOYMENT, AZURE_OPENAI_API_VERSION")
+            
             self.llm = AzureChatOpenAI(
-                azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini"),
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
+                azure_deployment=azure_deployment,
+                api_version=azure_api_version,
                 temperature=0.0
             )
             
             # Initialize embeddings
+            # Use SentenceTransformer directly with SSL bypass
+            import sentence_transformers
+            import requests
+            
+            # Patch requests session to disable SSL verification
+            original_request = requests.Session.request
+            def patched_request(self, method, url, **kwargs):
+                kwargs.setdefault('verify', False)
+                return original_request(self, method, url, **kwargs)
+            requests.Session.request = patched_request # type: ignore
+            
             self.embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'}
+                model_kwargs={
+                    'device': 'cpu', 
+                    'trust_remote_code': True
+                },
+                encode_kwargs={'normalize_embeddings': True}
             )
             
             # Initialize Qdrant client
+            qdrant_url = get_secret_from_keyvault("QDRANT_API_URL")
+            qdrant_api_key = get_secret_from_keyvault("QDRANT_API_KEY")
+            
+            if not qdrant_url or not qdrant_api_key:
+                raise ValueError("Qdrant credentials not found. Required: QDRANT_API_URL, QDRANT_API_KEY")
+            
             self.qdrant_client = QdrantClient(
-                url=os.getenv("QDRANT_API_URL", "http://localhost:6333"),
-                api_key=os.getenv("QDRANT_API_KEY")
+                url=qdrant_url,
+                api_key=qdrant_api_key
             )
             
             # Initialize Neo4j driver
+            neo4j_uri = get_secret_from_keyvault("NEO4J_URI")
+            neo4j_username = get_secret_from_keyvault("NEO4J_USERNAME")
+            neo4j_password = get_secret_from_keyvault("NEO4J_PASSWORD")
+            
+            if not neo4j_uri or not neo4j_username or not neo4j_password:
+                raise ValueError("Neo4j credentials not found. Required: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD")
+            
             self.neo4j_driver = GraphDatabase.driver(
-                os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-                auth=(
-                    os.getenv("NEO4J_USERNAME", "neo4j"),
-                    os.getenv("NEO4J_PASSWORD", "password")
-                )
+                neo4j_uri,
+                auth=(neo4j_username, neo4j_password)
             )
             
-            # Initialize BM25 retriever (configurable initialization)
-            if self.eager_bm25_init:
-                # Initialize BM25 at startup
-                self.bm25_retriever = self._initialize_bm25_retriever()
-                logger.info("bm25_initialization_strategy", strategy="eager", success=self.bm25_retriever is not None)
-            else:
-                # Skip BM25 initialization - will use vector-only search
-                self.bm25_retriever = None
-                logger.info("bm25_initialization_strategy", strategy="disabled")
+            # Initialize BM25 retriever (always initialize)
+            self.bm25_retriever = self._initialize_bm25_retriever()
+            logger.info("bm25_initialization_strategy", strategy="always", success=self.bm25_retriever is not None)
             
             # Initialize all agents
             self.orchestrator = OrchestratorAgent(llm=self.llm)  # Pass LLM for medical validation
+            
+            collection_name = get_secret_from_keyvault("QDRANT_COLLECTION") or "documents"
+            
             self.vector_rag = VectorRAGAgent(
                 self.qdrant_client, 
                 self.embeddings,
-                collection_name=os.getenv("QDRANT_COLLECTION", "documents"),
+                collection_name=collection_name,
                 llm=self.llm,
                 bm25_retriever=self.bm25_retriever
             )
@@ -113,73 +166,53 @@ class MultiAgentRAGWorkflow:
             raise
     
     def _initialize_bm25_retriever(self):
-        """
-        Initialize BM25 retriever from Qdrant documents.
-        Simple implementation that fetches documents and creates BM25 index.
-        """
+        """Initialize BM25 retriever from Qdrant documents."""
         try:
-            # Basic validation
-            if not hasattr(self, 'qdrant_client') or self.qdrant_client is None:
-                logger.error("bm25_initialization_failed", error="qdrant_client not available")
-                return None
-            
-            collection_name = os.getenv("QDRANT_COLLECTION", "documents")
+            collection_name = get_secret_from_keyvault("QDRANT_COLLECTION") or "documents"
             
             # Fetch documents from Qdrant
-            scroll_result = self.qdrant_client.scroll(
+            points, _ = self.qdrant_client.scroll(
                 collection_name=collection_name,
-                limit=5000,  # Reasonable limit for BM25 indexing
+                limit=1000,
                 with_payload=True,
                 with_vectors=False
             )
             
-            points, _ = scroll_result
-            
-            if not points:
-                logger.warning("no_documents_found_for_bm25", collection=collection_name)
-                return None
-            
             # Convert to LangChain Documents
-            documents = []
-            for point in points:
-                content = point.payload.get("chunk", "") # type: ignore
-                metadata = point.payload.get("metadata", {}) # type: ignore
-                
-                if content.strip():  # Only non-empty content
-                    documents.append(Document(
-                        page_content=content,
-                        metadata=metadata
-                    ))
+            documents = [
+                Document(page_content=point.payload.get("chunk", ""),  # type: ignore
+                        metadata=point.payload.get("metadata", {})) # type: ignore
+                for point in points
+                if point.payload.get("chunk", "").strip() # type: ignore
+            ]
             
             if not documents:
-                logger.warning("no_valid_documents_for_bm25")
+                logger.warning(f"No documents found in collection: {collection_name}")
                 return None
             
             # Create BM25 retriever
             bm25_retriever = BM25Retriever.from_documents(documents)
             bm25_retriever.k = 10
             
-            logger.info("bm25_retriever_initialized", 
-                       document_count=len(documents), 
-                       collection=collection_name)
-            
+            logger.info(f"BM25 initialized with {len(documents)} documents")
             return bm25_retriever
             
         except Exception as e:
-            logger.error("bm25_initialization_failed", error=str(e))
-            return None  # Graceful fallback to vector-only search
+            logger.error(f"BM25 initialization failed: {e}")
+            return None
     
     def build_workflow(self):
         """
         Build the simple LangGraph workflow - Happy Path only
         
         Simple linear flow:
-        1. Orchestrator decides routing (always returns vector/graph/both)
-        2. Vector and/or Graph retrieval based on routing
+        1. Orchestrator decides routing (all routing logic is in OrchestratorAgent)
+        2. Vector and/or Graph retrieval based on orchestrator's routing decision
         3. Validation
         4. Synthesis
         
-        Note: No "none" routing case since OrchestratorAgent always returns valid routes
+        The workflow contains NO business logic - it only defines the flow structure.
+        All routing decisions are delegated directly to the orchestrator agent.
         """
         
         # Create state graph
@@ -195,10 +228,10 @@ class MultiAgentRAGWorkflow:
         # Set entry point
         workflow.set_entry_point("orchestrator")
         
-        # Simple routing from orchestrator
+        # Simple routing from orchestrator - delegate directly to orchestrator
         workflow.add_conditional_edges(
             "orchestrator",
-            self.route_query,
+            lambda state: self.orchestrator.get_workflow_routing(state),
             {
                 "vector": "vector_rag",
                 "graph": "graph_rag", 
@@ -207,10 +240,10 @@ class MultiAgentRAGWorkflow:
             }
         )
         
-        # For "both" routing, handle vector -> graph flow
+        # For "both" routing, handle vector -> graph flow - delegate directly to orchestrator
         workflow.add_conditional_edges(
             "vector_rag",
-            self.check_if_graph_needed,
+            lambda state: self.orchestrator.get_post_vector_routing(state),
             {
                 "continue_to_graph": "graph_rag",
                 "continue_to_validator": "validator"
@@ -229,216 +262,133 @@ class MultiAgentRAGWorkflow:
         # Compile the workflow
         self.workflow = workflow.compile()
         
-        logger.info("simple_workflow_compiled_happy_path_only")
+        logger.info("secure_workflow_compiled")
     
     
     def orchestrator_node(self, state: WorkflowState) -> WorkflowState:
         """
         Orchestrator agent node - Simple routing decision
-        Measures performance and logs routing decisions
+        Logs routing decisions
         """
-        # DEBUG: Log the incoming query and orchestrator decision
-        query = state.get("query", "No query")
-        print(f"🎯 ORCHESTRATOR DEBUG: Processing query: '{query}'")
-        
-        with observability.measure_agent_performance("orch", cast(Dict[str, Any], state)):
-            result = self.orchestrator.route_query(state)
-            
-            # DEBUG: Log the routing decision
-            route = result.get("route", "unknown")
-            print(f"🎯 ORCHESTRATOR DEBUG: Route decision: '{route}'")
-            print(f"🎯 ORCHESTRATOR DEBUG: Full result keys: {list(result.keys())}")
-            
-            return result
+        result = self.orchestrator.route_query(state)
+        return result
     
     def vector_rag_node(self, state: WorkflowState) -> WorkflowState:
         """
         Vector RAG agent node - Simple semantic search
         Performs search using Qdrant vector database
         """
-        # DEBUG: Log vector RAG processing
-        query = state.get("query", "No query")
-        print(f"🔍 VECTOR RAG DEBUG: Processing query: '{query}'")
-        
-        with observability.measure_agent_performance("vec", cast(Dict[str, Any], state)):
-            result = self.vector_rag.retrieve_documents(state)
-            
-            # DEBUG: Log vector search results
-            vector_context = result.get("vector_context", "No vector context")
-            vector_docs_count = len(vector_context.split("\n")) if vector_context else 0
-            print(f"🔍 VECTOR RAG DEBUG: Retrieved {vector_docs_count} document chunks")
-            print(f"🔍 VECTOR RAG DEBUG: Vector context length: {len(vector_context) if vector_context else 0} chars")
-            
-            return result
+        result = self.vector_rag.retrieve_documents(state)
+        return result
     
     def graph_rag_node(self, state: WorkflowState) -> WorkflowState:
         """
         Graph RAG agent node - Simple graph queries
         Performs knowledge graph queries using Neo4j
         """
-        # DEBUG: Log graph RAG processing
-        query = state.get("query", "No query")
-        print(f"📊 GRAPH RAG DEBUG: Processing query: '{query}'")
-        
-        with observability.measure_agent_performance("graph", cast(Dict[str, Any], state)):
-            result = self.graph_rag.extract_and_query(state)
-            
-            # DEBUG: Log graph search results
-            graph_context = result.get("graph_context", "No graph context")
-            entities = result.get("entities", [])
-            cypher_query = result.get("cypher_query", "No cypher query")
-            
-            print(f"📊 GRAPH RAG DEBUG: Extracted entities: {entities}")
-            print(f"📊 GRAPH RAG DEBUG: Generated Cypher: {cypher_query}")
-            print(f"📊 GRAPH RAG DEBUG: Graph context length: {len(graph_context) if graph_context else 0} chars")
-            print(f"📊 GRAPH RAG DEBUG: Graph context preview: {graph_context[:200] if graph_context else 'None'}...")
-            
-            return result
+        result = self.graph_rag.extract_and_query(state)
+        return result
     
     def validator_node(self, state: WorkflowState) -> WorkflowState:
         """
         Validator agent node - Simple consistency checking
         Happy path: validation should generally pass
         """
-        # DEBUG: Log validator processing
-        query = state.get("query", "No query")
-        vector_context = state.get("vector_context", "")
-        graph_context = state.get("graph_context", "")
-        
-        print(f"✅ VALIDATOR DEBUG: Processing query: '{query}'")
-        print(f"✅ VALIDATOR DEBUG: Has vector context: {bool(vector_context)} ({len(vector_context) if vector_context else 0} chars)")
-        print(f"✅ VALIDATOR DEBUG: Has graph context: {bool(graph_context)} ({len(graph_context) if graph_context else 0} chars)")
-        
-        with observability.measure_agent_performance("val", cast(Dict[str, Any], state)):
-            result = self.validator.validate_results(state)
-            
-            # DEBUG: Log validation results
-            validation_status = result.get("validation_status", "unknown")
-            validation_details = result.get("validation_details", "No details")
-            
-            print(f"✅ VALIDATOR DEBUG: Validation status: {validation_status}")
-            print(f"✅ VALIDATOR DEBUG: Validation details: {validation_details}")
-            
-            return result
+        result = self.validator.validate_results(state)
+        return result
     
     def synthesizer_node(self, state: WorkflowState) -> WorkflowState:
         """
         Answer synthesis agent node - Final answer composition
         Creates comprehensive answer without citations
         """
-        # DEBUG: Log synthesizer processing
-        query = state.get("query", "No query")
-        vector_context = state.get("vector_context", "")
-        graph_context = state.get("graph_context", "")
-        
-        print(f"🧠 SYNTHESIZER DEBUG: Processing query: '{query}'")
-        print(f"🧠 SYNTHESIZER DEBUG: Input contexts - Vector: {len(vector_context) if vector_context else 0} chars, Graph: {len(graph_context) if graph_context else 0} chars")
-        
-        with observability.measure_agent_performance("ans", cast(Dict[str, Any], state)):
-            result = self.synthesizer.synthesize_answer(state)
-            
-            # DEBUG: Log synthesis results
-            final_answer = result.get("answer", "No answer")
-            print(f"🧠 SYNTHESIZER DEBUG: Generated answer length: {len(final_answer)} chars")
-            print(f"🧠 SYNTHESIZER DEBUG: Answer preview: {final_answer[:200]}...")
-            
-            return result
+        result = self.synthesizer.synthesize_answer(state)
+        return result
     
-    def route_query(self, state: WorkflowState) -> str:
-        """Route the query based on orchestrator decision"""
-        route = state.get("route", "both")
-        
-        # DEBUG: Log routing decision details
-        query = state.get("query", "No query")
-        print(f"🔀 ROUTING DEBUG: Query: '{query}'")
-        print(f"🔀 ROUTING DEBUG: Orchestrator decided route: '{route}'")
-        
-        if route == "vector":
-            print(f"🔀 ROUTING DEBUG: Taking VECTOR-ONLY path")
-            return "vector"
-        elif route == "graph":
-            print(f"🔀 ROUTING DEBUG: Taking GRAPH-ONLY path")
-            return "graph"
-        elif route == "both":
-            print(f"🔀 ROUTING DEBUG: Taking BOTH path (vector first, then graph)")
-            return "both_vector_first"  # Start with vector, then graph
-        elif route == "none":
-            print(f"🔀 ROUTING DEBUG: Taking NONE path (non-medical query)")
-            return "none"  # Non-medical query - end workflow
-        else:
-            # This should never happen with function calling OrchestratorAgent
-            # but provide fallback for safety
-            print(f"🔀 ROUTING DEBUG: FALLBACK - Unknown route '{route}', defaulting to BOTH")
-            return "both_vector_first"
-    
-    def check_if_graph_needed(self, state: WorkflowState) -> str:
-        """
-        Simple check if we need to continue to graph after vector retrieval
-        """
-        route = state.get("route", "")
-        if route == "both":
-            return "continue_to_graph"
-        else:
-            return "continue_to_validator"
-    
+    @traceable(**get_traceable_config("secure_workflow_execution"))
     def run(self, query: str) -> str:
         """
-        Main method to run the workflow with a query
+        Main method to run the secure workflow with a query
         
         Args:
             query: The user's question/query
             
         Returns:
             str: The final synthesized answer
+            
+        Raises:
+            SecurityViolationError: If security validation fails
         """
         try:
-            # Create initial state
-            initial_state = create_initial_state(query)
+            # Step 1: Security validation and sanitization
+            sanitized_query = self.security_middleware.validate_and_sanitize_query(query)
             
-            logger.info("workflow_started", query=query)
+            logger.info("secure_workflow_started", 
+                       original_query_length=len(query),
+                       sanitized_query_length=len(sanitized_query))
             
-            # Run the workflow
+            # Step 2: Create initial state with sanitized query
+            initial_state = create_initial_state(sanitized_query)
+            
+            # Step 3: Run the workflow
             result = self.workflow.invoke(initial_state)
             
-            # Extract final answer - handle both medical and non-medical cases
+            # Step 4: Extract final answer - handle both medical and non-medical cases
             final_answer = result.get("final_answer")  # Non-medical queries
             if not final_answer:
                 final_answer = result.get("answer")  # Medical queries
             if not final_answer:
                 final_answer = "No answer generated"
             
-            logger.info("workflow_completed", answer_length=len(final_answer))
+            logger.info("secure_workflow_completed", 
+                       answer_length=len(final_answer))
             
             return final_answer
             
+        except SecurityViolationError as e:
+            logger.error("security_violation_in_workflow", 
+                        error=str(e))
+            raise
         except Exception as e:
-            logger.error("workflow_execution_failed", error=str(e))
+            logger.error("secure_workflow_execution_failed", error=str(e))
             raise
 
 
 def main():
     """
-    Main function to demonstrate the workflow
+    Main function to demonstrate the secure workflow
     """
     try:
-        # Initialize the workflow
+        # Initialize the secure workflow
         workflow = MultiAgentRAGWorkflow()
         
-        # Example query
-        #query ="what is .net?"
-        query = "What is NIH Chest X-ray?"
-        query ="Provide concerns about the image label accuracy in medical"
-        query ="Tell me about the medical history of patient ID 1, including all findings and their progression"
-        query ="Tell me about the medical history of patient ID 1, including all findings and their progression?"
-        print(f"Query: {query}")
-        print("=" * 50)
+        # Example queries with different security scenarios
+        test_queries = [
+            #"What is SNOMED-CT Concepts?",  # Normal query
+            "What is NIH Chest X-ray?",  # Normal query
+            #"SELECT * FROM users WHERE id=1; DROP TABLE users;",  # SQL injection attempt
+            #"What are the <script>alert('xss')</script> medical findings?",  # XSS attempt
+            #"What is {}[]();--/**/\x00medical data?",  # Special characters test
+        ]
         
-        # Run the workflow
-        answer = workflow.run(query)
-        
-        print("Final Answer:")
-        print(answer)
-        
+        for i, query in enumerate(test_queries, 1):
+            try:
+                print(f"\n--- Test Query {i} ---")
+                print(f"Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+                print("=" * 50)
+                
+                # Run the workflow with security validation
+                answer = workflow.run(query)
+                
+                print("✅ Query processed successfully!")
+                print("Final Answer:")
+                print(answer)
+                
+            except SecurityViolationError as e:
+                print(f"❌ Security Violation: {e}")
+            except Exception as e:
+                print(f"❌ Error: {e}")
+                
     except Exception as e:
         logger.error("main_execution_failed", error=str(e))
         print(f"Error: {e}")

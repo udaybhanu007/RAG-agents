@@ -39,6 +39,78 @@ class StructuredDocumentIngestor:
             'table_count': 0
         }
     
+        # with pdfplumber.open(file_path) as pdf:
+        #     for page_num, page in enumerate(pdf.pages, 1):
+        #         page_tables = page.extract_tables()
+        #         for table_idx, table in enumerate(page_tables):
+        #             if table and len(table) > 1:
+        #                 try:
+        #                     df = pd.DataFrame(table[1:], columns=table[0])
+        #                     df = df.fillna('')
+        #                     table_text = self.format_table_for_ingestion(df, page_num, table_idx)
+        #                     tables.append({
+        #                         'page': page_num,
+        #                         'index': table_idx,
+        #                         'content': table_text,
+        #                         'rows': len(df),
+        #                         'columns': len(df.columns)
+        #                     })
+        #                 except Exception as e:
+        #                     print(f"   ⚠️  Warning: Failed to process table on page {page_num}: {e}")
+        # extracted['tables'] = tables
+        # extracted['table_count'] = len(tables)
+
+
+
+        structured_data = self.extract_structured_for_graph_db(full_text, tables)
+        entities = self.extract_entities(full_text)
+        relationships = self.extract_relationships(full_text, entities)
+        # Extract just the filename from file_path (remove directory path)
+        source_filename = os.path.basename(file_path)
+        
+        # Generate blob URL from environment variables if available
+        storage_account = get_secret_from_keyvault("AZURE_STORAGE_ACCOUNT_NAME")
+        container_name = get_secret_from_keyvault("AZURE_BLOB_CONTAINER_NAME")
+        
+        metadata = {
+            "file_path": file_path,
+            "file_name": source_filename,
+            "classification": "structured",
+            "document_type": UtilityFunctions.determine_document_type(full_text),
+            "processing_timestamp": "2025-07-29T00:00:00Z"
+        }
+        
+        # Add blob URL and source info if available
+        if storage_account and container_name:
+            blob_url = f"https://{storage_account}.blob.core.windows.net/{container_name}/{source_filename}"
+            metadata["blob_url"] = blob_url
+            metadata["container_name"] = container_name
+            metadata["storage_account"] = storage_account
+            metadata["source_type"] = "azure_blob"
+        else:
+            metadata["source_type"] = "local_file"
+        return ExtractedResponse(
+            full_text=full_text,
+            unstructured_chunks=[],
+            structured_data=structured_data,
+            entities=entities,
+            relationships=relationships,
+            metadata=metadata
+        )
+
+    def ingest_structured_pdf_document(self, file_path: str, content: str):
+        """
+        Ingest a structured document (CSV, Excel, XML, JSON, etc.) and return ExtractedResponse.
+        """
+        print(f"[Structured Ingestion] Processing: {file_path}")
+      
+        full_text = content or ""
+        tables = []  # You can add logic to extract tables from content if needed
+        extracted = {
+            'tables': [],
+            'table_count': 0
+        }
+    
         with pdfplumber.open(file_path) as pdf:
             for page_num, page in enumerate(pdf.pages, 1):
                 page_tables = page.extract_tables()
@@ -97,7 +169,6 @@ class StructuredDocumentIngestor:
             relationships=relationships,
             metadata=metadata
         )
-
 
     ### Gunjan properly validate this method with all the tables in the .pdf
     def process_tables_for_graph(self, tables: List[Dict]) -> List[Dict[str, Any]]:

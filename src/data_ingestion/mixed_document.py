@@ -110,7 +110,7 @@ class MixedDocumentIngestor:
             # table_count = raw_content['table_count']
             unstructured_chunks = self.narrative_chunker.chunk(file_path, full_text)
             #structured_data, entities, relationships = self.entity_rel_extractor.extract(file_path, tables)
-            extractedResponse = self.structured_ingestor.ingest_structured_document(file_path,"")
+            extractedResponse = self.structured_ingestor.ingest_structured_pdf_document(file_path,"")
            
             return ExtractedResponse(
                 full_text=full_text,

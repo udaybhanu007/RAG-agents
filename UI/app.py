@@ -3,14 +3,20 @@ import sys
 import os
 import time
 
-# Add path to your workflow
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src', 'agents'))
+# Add path to your workflow - add only the src directory
+src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+# Insert at the beginning to ensure our modules are found first
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
 
 try:
-    from multi_agent_rag_workflow import MultiAgentRAGWorkflow
+    from agents.multi_agent_rag_workflow import MultiAgentRAGWorkflow
     print("✅ Successfully imported MultiAgentRAGWorkflow")
 except ImportError as e:
     print(f"❌ Error importing MultiAgentRAGWorkflow: {e}")
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"Python path: {sys.path[:3]}...")  # Show first 3 entries
     print("Make sure you're running from the correct directory and all dependencies are installed")
     sys.exit(1)
 

@@ -9,8 +9,8 @@ from langchain_core.documents import Document
 from langchain_community.retrievers import BM25Retriever
 from pydantic.v1 import BaseModel, Field
 from qdrant_client import QdrantClient
-from workflow_state import WorkflowState
-from tool_governance import (
+from .workflow_state import WorkflowState
+from .tool_governance import (
     ToolRegistry, ToolMetadata, AgentRole, tool_registry,
     AccessDeniedError, SecureAgentBase, state_manager
 )
@@ -33,8 +33,8 @@ from core.input_sanitization import (
     DOCUMENT_RERANKING_TEMPLATE
 )
 
-from logging_config import get_logger
-from tool_governance import (
+from .logging_config import get_logger
+from .tool_governance import (
     ToolRegistry, ToolMetadata, AgentRole, tool_registry, 
     AccessDeniedError, SecureAgentBase, state_manager
 )

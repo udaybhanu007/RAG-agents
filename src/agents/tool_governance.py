@@ -4,7 +4,7 @@ from enum import Enum
 import logging
 import uuid
 from datetime import datetime
-from workflow_state import WorkflowState
+from .workflow_state import WorkflowState
 
 class AgentRole(Enum):
     ORCHESTRATOR = "orchestrator"

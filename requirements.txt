@@ -52,8 +52,9 @@ structlog>=23.2.0
 # LangSmith for observability and tracing
 langsmith>=0.0.70
 
-# Streamlit for user interface
+# Streamlit and Flask for user interface
 streamlit>=1.28.0
+flask>=2.3.0
 rank_bm25>=0.2.0
 
 # Azure services

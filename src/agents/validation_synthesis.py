@@ -5,7 +5,7 @@ import os
 from langchain_openai import AzureChatOpenAI
 from langchain_core.tools import tool
 from pydantic.v1 import BaseModel, Field
-from workflow_state import WorkflowState, ValidationResult
+from .workflow_state import WorkflowState, ValidationResult
 
 # Add the src directory to the path to enable absolute imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -22,8 +22,8 @@ except ImportError:
     from core.observability import  traceable, get_traceable_config
     from core.input_sanitization import detect_prompt_injection, sanitize_user_input, validate_llm_output, secure_llm_interaction
 
-from logging_config import get_logger
-from tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
+from .logging_config import get_logger
+from .tool_governance import ToolRegistry, ToolMetadata, AgentRole, tool_registry, AccessDeniedError, SecureAgentBase
 
 logger = get_logger("validation_synthesis")
 

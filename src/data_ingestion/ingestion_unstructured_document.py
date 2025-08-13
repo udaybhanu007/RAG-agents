@@ -126,7 +126,7 @@ class EmbeddingManager:
 class UnstructuredDocumentIngestor:
     def __init__(self, api_url=None, api_key=None):
         # Load from Azure Key Vault
-        self.collection_name = get_secret_from_keyvault("COLLECTION_NAME") 
+        self.collection_name = get_secret_from_keyvault("QDRANT_COLLECTION") 
         
         # Get secrets from Key Vault
         self.api_url = api_url or get_secret_from_keyvault("QDRANT_API_URL")

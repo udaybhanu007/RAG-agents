@@ -193,24 +193,24 @@ def load_custom_css():
         border-color: var(--secondary-color) !important;
     }
     
-    /* Example queries styling */
+    /* Example queries styling - compact version */
     .example-queries {
         background: var(--background-card);
         border: 1px solid var(--border-color);
         border-radius: var(--border-radius);
-        padding: calc(var(--spacing-unit) * 2);
-        margin-bottom: calc(var(--spacing-unit) * 2);
+        padding: calc(var(--spacing-unit) * 1);
+        margin-bottom: calc(var(--spacing-unit) * 1);
     }
     
     .example-item {
         background: var(--background-light);
         border: 1px solid var(--border-color);
         border-radius: var(--border-radius-sm);
-        padding: calc(var(--spacing-unit) * 2);
-        margin: calc(var(--spacing-unit) * 1) 0;
+        padding: calc(var(--spacing-unit) * 1);
+        margin: calc(var(--spacing-unit) * 0.5) 0;
         cursor: pointer;
         transition: all 0.2s ease-in-out;
-        font-size: 0.9rem;
+        font-size: 0.8rem;
         color: var(--text-primary);
     }
     
@@ -342,22 +342,21 @@ def display_status_indicator(ready: bool, error: Optional[str] = None):
         """, unsafe_allow_html=True)
 
 def display_example_queries():
-    """Display example queries in a professional card layout"""
+    """Display example queries in a compact format"""
     st.markdown("""
-    <div class="custom-card">
-        <h3 style="color: var(--text-primary); margin-bottom: calc(var(--spacing-unit) * 2); font-size: 1.25rem; font-weight: 600;">
+    <div class="custom-card example-queries">
+        <h3 style="color: var(--text-primary); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600;">
             💡 Example Queries
         </h3>
     </div>
     """, unsafe_allow_html=True)
     
+    # Reduced and more concise examples
     examples = [
-        "Provide concerns about the image label accuracy in medical imaging",
         "What is NIH Chest X-ray?",
-        "Total number of male patients, age is 30, Finding Labels is effusion",
-        "Total number of Female patients, age less than 30, Finding Labels is effusion",
-        "What are the main findings in chest X-ray analysis?",
-        "Explain the relationship between age and medical conditions in the dataset"
+        "Main findings in X-ray analysis",
+        "Male patients with effusion",
+        "Dataset age relationships"
     ]
     
     cols = st.columns(2)

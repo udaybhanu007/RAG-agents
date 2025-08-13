@@ -312,11 +312,55 @@ def init_session_state():
 # Initialize the workflow
 @st.cache_resource
 def initialize_workflow():
-    """Initialize the Multi-Agent RAG Workflow with caching for performance"""
+    """Initialize the Multi-Agent RAG Workflow with caching and progress tracking"""
     try:
-        workflow = MultiAgentRAGWorkflow()
+        import time
+        
+        # Create a progress container for better UX
+        progress_placeholder = st.empty()
+        
+        with progress_placeholder.container():
+            st.info("🔄 Initializing Multi-Agent RAG Workflow...")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Track initialization phases
+            start_time = time.time()
+            
+            status_text.text("Initializing security middleware...")
+            progress_bar.progress(10)
+            
+            status_text.text("Connecting to Azure OpenAI...")
+            progress_bar.progress(30)
+            
+            status_text.text("Setting up database connections...")
+            progress_bar.progress(50)
+            
+            status_text.text("Loading AI models...")
+            progress_bar.progress(70)
+            
+            status_text.text("Initializing agents...")
+            progress_bar.progress(85)
+            
+            # Actually create the workflow
+            workflow = MultiAgentRAGWorkflow()
+            
+            status_text.text("Building workflow graph...")
+            progress_bar.progress(95)
+            
+            progress_bar.progress(100)
+            elapsed_time = time.time() - start_time
+            
+            status_text.text(f"✅ Initialization complete! ({elapsed_time:.1f}s)")
+            
+            # Clear progress after a short delay
+            time.sleep(1)
+            progress_placeholder.empty()
+        
         return workflow, True, None
+        
     except Exception as e:
+        progress_placeholder.empty()
         return None, False, str(e)
 
 def display_status_indicator(ready: bool, error: Optional[str] = None):

@@ -1,4 +1,33 @@
 
+import ssl
+import urllib3
+import os
+import sys
+
+# Disable SSL verification globally before any other imports
+ssl._create_default_https_context = ssl._create_unverified_context
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+os.environ['SSL_VERIFY'] = 'false'
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+
+# Additional environment variables for Hugging Face Hub
+os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+
+# Apply the same SSL patch as in multi_agent_rag_workflow.py
+import requests
+original_request = requests.Session.request
+def patched_request(self, method, url, **kwargs):
+    kwargs.setdefault('verify', False)
+    return original_request(self, method, url, **kwargs)
+requests.Session.request = patched_request
+
+# Disable SSL warnings globally
+import warnings
+warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+
 from typing import List, Dict, Any, Optional
 from .ExtractedResponse import ExtractedResponse
 from qdrant_client import QdrantClient
@@ -6,9 +35,6 @@ from qdrant_client.models import Distance, VectorParams
 from sentence_transformers import SentenceTransformer
 from .chunking_unstructured import create_chunk
 from .utility_functions import UtilityFunctions
-import sys
-import os
-import sys
 
 # Add the src directory to the path to enable absolute imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -119,8 +145,74 @@ class DocumentChunker:
 class EmbeddingManager:
     """Manages embedding generation using SentenceTransformer."""
     def __init__(self, model_name: str = 'all-MiniLM-L6-v2'):
-        self.model = SentenceTransformer(model_name)
+        self.model_name = model_name
+        self.model = None
+        self._load_model()
+    
+    def _load_model(self):
+        """Load the SentenceTransformer model with SSL workarounds."""
+        try:
+            print(f"   🔄 Loading embedding model: {self.model_name}")
+            
+            # First try: Direct load with SSL disabled
+            self.model = SentenceTransformer(self.model_name, trust_remote_code=True)
+            print(f"   ✅ Successfully loaded {self.model_name}")
+            return
+            
+        except Exception as e:
+            print(f"   ⚠️  Error loading {self.model_name}: {str(e)[:150]}...")
+            
+        # Second try: Use huggingface_hub to download first, then load
+        try:
+            print(f"   🔄 Attempting to download model files manually...")
+            from huggingface_hub import snapshot_download
+            import tempfile
+            
+            # Create temporary directory for model
+            temp_dir = tempfile.mkdtemp()
+            
+            # Try to download model files manually with SSL disabled
+            model_path = snapshot_download(
+                repo_id=f"sentence-transformers/{self.model_name}",
+                cache_dir=temp_dir,
+                local_files_only=False,
+                ignore_patterns=["*.bin", "*.safetensors"]  # Skip large files first
+            )
+            
+            # Load from downloaded path
+            self.model = SentenceTransformer(model_path, trust_remote_code=True)
+            print(f"   ✅ Successfully loaded {self.model_name} via manual download")
+            return
+            
+        except Exception as e2:
+            print(f"   ⚠️  Manual download failed: {str(e2)[:150]}...")
+            
+        # Third try: Use a local fallback model or alternative
+        try:
+            print(f"   🔄 Trying alternative model loading approach...")
+            
+            # Set environment to force local loading
+            os.environ['TRANSFORMERS_OFFLINE'] = '1'
+            os.environ['HF_HUB_OFFLINE'] = '1'
+            
+            self.model = SentenceTransformer(self.model_name, trust_remote_code=True)
+            print(f"   ✅ Successfully loaded {self.model_name} in offline mode")
+            return
+            
+        except Exception as e3:
+            print(f"   ❌ All loading attempts failed.")
+            print(f"   💡 Please manually download the model or check your network connection.")
+            
+            # Try to provide helpful instructions
+            print(f"\n   📝 To manually fix this issue:")
+            print(f"   1. Download the model manually: python -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('{self.model_name}')\"")
+            print(f"   2. Or use a different model that's already cached")
+            
+            raise Exception(f"Could not load embedding model {self.model_name}. All loading methods failed.")
+    
     def generate_embeddings(self, texts: List[str]):
+        if self.model is None:
+            raise Exception("Model not loaded. Cannot generate embeddings.")
         return self.model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
 
 class UnstructuredDocumentIngestor:

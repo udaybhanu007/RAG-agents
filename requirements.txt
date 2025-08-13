@@ -13,6 +13,7 @@ azure-identity-broker>=1.0.0
 PyMuPDF>=1.23.0
 pymupdf4llm>=0.0.12
 Pillow>=10.0.0
+pdfplumber
 
 # Machine learning and embeddings
 sentence-transformers>=2.2.0

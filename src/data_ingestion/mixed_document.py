@@ -12,6 +12,26 @@ Key Features:
 - Production-ready database connection interfaces
 """
 
+import ssl
+import urllib3
+import os
+
+# Disable SSL verification globally before any other imports
+ssl._create_default_https_context = ssl._create_unverified_context
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+os.environ['SSL_VERIFY'] = 'false'
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+
+# Apply the same SSL patch as in multi_agent_rag_workflow.py
+import requests
+original_request = requests.Session.request
+def patched_request(self, method, url, **kwargs):
+    kwargs.setdefault('verify', False)
+    return original_request(self, method, url, **kwargs)
+requests.Session.request = patched_request
+
 import re
 import json
 import pymupdf4llm

@@ -1,6 +1,16 @@
 
-
+import ssl
+import urllib3
 import os
+
+# Disable SSL verification globally before any other imports
+ssl._create_default_https_context = ssl._create_unverified_context
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+os.environ['SSL_VERIFY'] = 'false'
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+
 from data_ingestion import document_ingestion_orchestrator
 from core.azure_keyvault_manager import get_secret_from_keyvault
 

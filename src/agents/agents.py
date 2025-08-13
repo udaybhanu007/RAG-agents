@@ -1106,12 +1106,17 @@ class VectorRAGAgent(SecureAgentBase):
                        collection_name=self.collection_name,
                        trace_id=trace_id)
             
-            # Step 1: Perform hybrid search (vector + BM25) using tool
+            # Step 1: Get BM25 retriever lazily if workflow reference is available
+            bm25_retriever = self.bm25_retriever
+            if not bm25_retriever and hasattr(self, '_workflow_ref'):
+                bm25_retriever = self._workflow_ref._get_bm25_retriever_lazy()
+            
+            # Step 2: Perform hybrid search (vector + BM25) using tool
             search_result = self.invoke_tool("perform_hybrid_search", {
                 "query": query,
                 "qdrant_client": self.qdrant_client,
                 "embeddings": self.embeddings,
-                "bm25_retriever": self.bm25_retriever,
+                "bm25_retriever": bm25_retriever,
                 "llm": self.llm,
                 "collection_name": self.collection_name,
                 "limit": 10                   

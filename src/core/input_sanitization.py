@@ -127,7 +127,7 @@ def validate_llm_output(output: str) -> str:
     for pattern in suspicious_patterns:
         if re.search(pattern, output.lower()):
             logger.warning(f"suspicious_llm_output_detected: {pattern}")
-            return "I can only provide medical information. Please ask a healthcare-related question."
+            return "suspicious LLM output detected."
     
     return output
 
@@ -145,9 +145,9 @@ def create_secure_prompt_template(template: str, user_input: str, **kwargs) -> s
         str: Formatted secure prompt
     """
     # Step 1: Detect injection attempts
-    if detect_prompt_injection(user_input):
-        logger.warning(f"prompt_injection_blocked_in_template: {user_input[:50]}")
-        raise ValueError("Prompt injection attempt detected")
+    # if detect_prompt_injection(user_input):
+    #     logger.warning(f"prompt_injection_blocked_in_template: {user_input[:50]}")
+    #     raise ValueError("Prompt injection attempt detected")
     
     # Step 2: Sanitize user input
     sanitized_input = sanitize_user_input(user_input)
@@ -196,7 +196,7 @@ def secure_llm_interaction(llm, template: str, user_input: str, **kwargs) -> str
     except ValueError as e:
         # Handle injection attempts gracefully
         logger.warning(f"secure_llm_interaction_blocked: {str(e)}")
-        return "I can only provide medical information. Please ask a healthcare-related question."
+        return "LLM response is not secured"
     except Exception as e:
         logger.error(f"secure_llm_interaction_failed: {str(e)}")
         raise

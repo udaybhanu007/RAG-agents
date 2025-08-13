@@ -117,7 +117,7 @@ def validate_medical_relevance(query: str, llm) -> QueryValidation:
         logger.warning("prompt_injection_blocked", query_snippet=query[:50])
         return QueryValidation(
             is_medical=False,
-            quick_response="I can only provide medical information. Please ask a healthcare-related question."
+            quick_response="User query is not valid. Please recheck and send it again"
         )
     
     # Step 2: Use secure LLM interaction with input delimiters
@@ -152,18 +152,18 @@ def validate_medical_relevance(query: str, llm) -> QueryValidation:
                 'radiolog', 'patholog', 'cardiolog', 'oncolog', 'neurol'
             ]
             
-            sanitized_query = sanitize_user_input(query)
-            query_lower = sanitized_query.lower()
+            #sanitized_query = sanitize_user_input(query)
+            query_lower = query.lower()
             has_medical_keywords = any(keyword in query_lower for keyword in medical_keywords)
             
             if has_medical_keywords:
                 is_medical = True
                 logger.info("medical_validation_fallback_to_keywords", 
-                           query=sanitized_query[:100], llm_response=content[:50])
+                           query=query[:100], llm_response=content[:50])
             else:
                 is_medical = False
                 logger.warning("medical_validation_unexpected_format", 
-                             content=content[:50], query=sanitized_query[:100])
+                             content=content[:50], query=query[:100])
         
         quick_response = None
         if not is_medical:
@@ -205,18 +205,9 @@ def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnal
     Returns:
         QueryAnalysis with intent, entity count, and relationship detection
     """
-    logger.info("analyze_query_characteristics_started", query_length=len(query))
+    logger.info("analyze_query_characteristics_started", query_length=len(query)) 
     
-    # Step 1: Detect prompt injection attempts
-    if detect_prompt_injection(query):
-        logger.warning("prompt_injection_blocked_in_analysis", query_snippet=query[:50])
-        return QueryAnalysis(
-            intent="FACTUAL",
-            entity_count=1,
-            has_relationships=False
-        )
-    
-    # Step 2: Use secure LLM interaction with input delimiters
+    # Step 1: Use secure LLM interaction with input delimiters
     try:
         validated_content = secure_llm_interaction(
             llm=llm,
@@ -289,17 +280,8 @@ def extract_entities_from_query(query: str, llm) -> EntityExtraction:
     """
     logger.info("extract_entities_from_query_started", query_length=len(query))
     
-    # Step 1: Detect prompt injection attempts
-    if detect_prompt_injection(query):
-        logger.warning("prompt_injection_blocked_in_extraction", query_snippet=query[:50])
-        return EntityExtraction(
-            entities=[],
-            relationships=[],
-            concepts=[],
-            scenario="CONCEPTS_ONLY"
-        )
-    
-    # Step 2: Use secure LLM interaction with input delimiters
+      
+    # Step 1: Use secure LLM interaction with input delimiters
     try:
         validated_content = secure_llm_interaction(
             llm=llm,
@@ -379,18 +361,7 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_q
     Returns:
         GraphQueryResult with retrieved triples
     """
-    # Step 0: Implement prompt injection protection for original query
-    if original_query and detect_prompt_injection(original_query):
-        logger.warning("prompt_injection_blocked_in_graph_queries", query_snippet=original_query[:50])
-        return GraphQueryResult(
-            triples=[],
-            queries_executed=0,
-            scenario_used="blocked_injection"
-        )
-    
-    # Sanitize the original query for safe context analysis
-    sanitized_query = sanitize_user_input(original_query) if original_query else ""
-    
+        
     entities = extraction.entities
     triples = []
     
@@ -398,11 +369,10 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_q
         try:
             logger.info("starting_adaptive_graph_query", 
                        entities=entities, 
-                       original_query_length=len(original_query),
-                       sanitized_query_length=len(sanitized_query))
+                       original_query_length=len(original_query))
             
             # Step 1: Dynamic Query Context Analysis (like Vector DB weighting) with sanitized query
-            query_context = _analyze_neo4j_query_context(sanitized_query, entities)
+            query_context = _analyze_neo4j_query_context(original_query, entities)
             
             # Step 2: Handle specific patient ID queries first
             patient_triples = _handle_patient_id_queries(session, entities)
@@ -411,9 +381,9 @@ def execute_graph_queries(extraction: EntityExtraction, neo4j_driver, original_q
                 logger.info("patient_id_query_executed", triples_found=len(patient_triples))
                 return GraphQueryResult(triples=triples, queries_executed=1, scenario_used="PATIENT_ID")
             
-            # Step 3: Build and execute adaptive query with sanitized query
+            # Step 3: Build and execute adaptive query with original query
             if query_context["has_filters"]:
-                adaptive_triples = _execute_adaptive_query(session, query_context, sanitized_query, entities)
+                adaptive_triples = _execute_adaptive_query(session, query_context, original_query, entities)
                 triples.extend(adaptive_triples)
                 logger.info("adaptive_query_executed", 
                            filters=query_context["demographic_filters"], 
@@ -708,20 +678,12 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
     """
     Perform hybrid search combining vector similarity and BM25 keyword search.
     """
-    # Security check
-    if detect_prompt_injection(query):
-        logger.warning(f"Blocked injection in search: {query[:50]}")
-        return HybridSearchResult(
-            documents=[], vector_count=0, bm25_count=0, 
-            total_found=0, search_strategy="blocked_injection"
-        )
-    
-    sanitized_query = sanitize_user_input(query)
+        
     vector_docs, bm25_docs = [], []
     
     # Vector search
     try:
-        query_embedding = embeddings.embed_query(sanitized_query)
+        query_embedding = embeddings.embed_query(query)
         vector_results = qdrant_client.search(
             collection_name=collection_name,
             query_vector=query_embedding,
@@ -746,7 +708,7 @@ def perform_hybrid_search(query: str, qdrant_client, embeddings, bm25_retriever=
     # BM25 search
     if bm25_retriever:
         try:
-            bm25_results = bm25_retriever.get_relevant_documents(sanitized_query)
+            bm25_results = bm25_retriever.get_relevant_documents(query)
             bm25_docs = [
                 {
                     "id": f"bm25_{i}",
@@ -836,10 +798,6 @@ def rerank_documents_by_relevance(query: str, documents: List[Dict[str, Any]], l
     """
     # Early exits
     if not documents or len(documents) <= 1:
-        return RerankedResult(documents=documents, reranking_applied=False)
-    
-    if detect_prompt_injection(query):
-        logger.warning(f"Reranking blocked - injection detected: {query[:50]}")
         return RerankedResult(documents=documents, reranking_applied=False)
     
     try:

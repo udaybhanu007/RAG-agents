@@ -200,12 +200,7 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
     logger.info("synthesize_answer_from_sources_started",
                query_length=len(query),
                vector_docs_count=len(vector_docs),
-               graph_triples_count=len(graph_triples))
-    
-    # Step 1: Detect prompt injection attempts
-    if detect_prompt_injection(query):
-        logger.warning("prompt_injection_blocked_in_synthesis", query_snippet=query[:50])
-        return SynthesisResult(answer="Unable to process this query due to security restrictions.")
+               graph_triples_count=len(graph_triples))        
     
     if not vector_docs and not graph_triples:
         logger.info("synthesize_answer_from_sources_completed",
@@ -215,7 +210,7 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
             answer="I don't have enough information to answer this query."
         )
 
-    # Step 2: Format vector results with sanitization
+    # Step 1: Format vector results with sanitization
     vector_content = "No document information available"
     if vector_docs:
         vector_items = []
@@ -226,7 +221,7 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
             vector_items.append(f"Document {i+1}: {sanitized_content}")
         vector_content = "\n".join(vector_items)
 
-    # Step 3: Format graph results with sanitization  
+    # Step 2: Format graph results with sanitization  
     graph_content = "No relationship information available"
     if graph_triples:
         graph_items = []
@@ -270,7 +265,7 @@ def synthesize_answer_from_sources(query: str, vector_docs: List[Dict[str, Any]]
             graph_content = "No relationship information available"
 
     try:
-        # Step 4: Use secure LLM interaction with input delimiters
+        # Step 3: Use secure LLM interaction with input delimiters
         try:
             from core.input_sanitization import SYNTHESIS_TEMPLATE
         except ImportError:

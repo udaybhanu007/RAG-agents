@@ -10,7 +10,17 @@ The RAG-Agents project is a sophisticated **Multi-Agent Retrieval-Augmented Gene
 ┌─────────────────────────────────────────────────────────────────┐
 │                     RAG-Agents System                           │
 ├─────────────────────────────────────────────────────────────────┤
-│  FastAPI Rest API Layer                                        │
+│  User Interface Layer                                          │
+│  ┌──────────────────┬──────────────────────────────────────────┐ │
+│  │  Streamlit Web   │       Direct Python API                 │ │
+│  │   Interface      │     (main.py entry point)               │ │
+│  └──────────────────┴──────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────────┤
+│  Security & Middleware Layer                                   │
+│  ┌─────────────────┬─────────────────┬────────────────────────┐ │
+│  │ Azure Key Vault │ Security        │ Input Sanitization     │ │
+│  │  Integration    │ Middleware      │ & Validation           │ │
+│  └─────────────────┴─────────────────┴────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
 │  Multi-Agent Workflow Engine (LangGraph)                       │
 │  ┌─────────────┬─────────────┬─────────────┬─────────────────┐  │
@@ -24,10 +34,10 @@ The RAG-Agents project is a sophisticated **Multi-Agent Retrieval-Augmented Gene
 │  │   Engine      │  Ingestion   │  Ingestion   │ Ingestion    │ │
 │  └──────────────┴──────────────┴──────────────┴──────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
-│  Storage Layer                                                 │
+│  Storage & Cloud Services Layer                                │
 │  ┌──────────────┬──────────────┬──────────────────────────────┐ │
-│  │   Qdrant     │    Neo4j     │     Configuration            │ │
-│  │Vector Database│Graph Database│   & Environment             │ │
+│  │   Qdrant     │    Neo4j     │    Azure Services            │ │
+│  │Vector Database│Graph Database│ (Blob Storage, Key Vault)   │ │
 │  └──────────────┴──────────────┴──────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -38,46 +48,45 @@ The RAG-Agents project is a sophisticated **Multi-Agent Retrieval-Augmented Gene
 RAG-agents/
 ├── src/                           # Main source code
 │   ├── agents/                    # Multi-agent system
-│   │   ├── agents.py             # Core agent implementations
-│   │   ├── multi_agent_rag_workflow.py  # LangGraph workflow
-│   │   ├── api.py                # FastAPI endpoints
-│   │   ├── workflow_state.py     # State management
-│   │   ├── observability.py      # Monitoring & metrics
+│   │   ├── agents.py             # Core agent implementations (OrchestratorAgent, VectorRAGAgent, GraphRAGAgent)
+│   │   ├── multi_agent_rag_workflow.py  # LangGraph workflow orchestration
+│   │   ├── streamlit_app.py      # Streamlit web interface
+│   │   ├── workflow_state.py     # State management & data flow
 │   │   ├── tool_governance.py    # Security & access control
 │   │   ├── validation_synthesis.py # Answer validation & synthesis
-│   │   └── logging_config.py     # Structured logging
+│   │   └── logging_config.py     # Structured logging configuration
 │   │
 │   ├── data_ingestion/            # Document processing pipeline
 │   │   ├── document_ingestion_orchestrator.py  # Main orchestrator
-│   │   ├── classify_document.py  # Document classification
-│   │   ├── mixed_document.py     # Mixed document handling
-│   │   ├── ingestion_structured_document.py   # Structured data
-│   │   ├── ingestion_unstructured_document.py # Unstructured text
+│   │   ├── classify_document.py  # Document classification engine
+│   │   ├── mixed_document.py     # Mixed document handling (PDFs with data+text)
+│   │   ├── ingestion_structured_document.py   # Structured data processing
+│   │   ├── ingestion_unstructured_document.py # Unstructured text processing
 │   │   ├── pdf_extractor.py      # PDF content extraction
 │   │   ├── csv_extracter.py      # CSV entity extraction
-│   │   ├── retrieval.py          # Search & retrieval
-│   │   ├── chunking_unstructured.py # Text chunking
+│   │   ├── chunking_unstructured.py # Text chunking strategies
 │   │   ├── utility_functions.py  # Helper utilities
-│   │   ├── ExtractedResponse.py   # Data models
+│   │   ├── ExtractedResponse.py   # Data models & schemas
 │   │   └── ingest_to_neo4j.py    # Graph database ingestion
 │   │
-│   ├── api/                       # API components
-│   │   ├── models.py             # API data models
-│   │   └── utils.py              # API utilities
+│   ├── core/                      # Core infrastructure & security
+│   │   ├── azure_keyvault_manager.py  # Azure Key Vault integration
+│   │   ├── security_middleware.py     # Security middleware layer
+│   │   ├── security_validator.py      # Input validation & sanitization
+│   │   ├── input_sanitization.py      # Advanced input sanitization
+│   │   ├── logging_config.py          # Centralized logging
+│   │   └── observability.py           # Performance monitoring & tracing
 │   │
-│   ├── core/                      # Core infrastructure
-│   │   ├── logging_config.py     # Centralized logging
-│   │   └── observability.py      # Performance monitoring
-│   │
-│   ├── config.py                  # Configuration management
-│   └── main.py                    # Application entry point
+│   └── main.py                    # Application entry point & document ingestion
 │
-├── tests/                         # Test suites
 ├── docs/                          # Documentation
+│   ├── architecture.md           # System architecture (this document)
+│   └── security_practices.md     # Security implementation guide
 ├── doc-ingestion/                 # Sample documents for ingestion
-├── scripts/                       # Utility scripts
-├── docker-compose.yml             # Container orchestration
-├── Dockerfile                     # Container definition
+│   ├── ARXIV_V5_CHESTXRAY.pdf    # Medical research papers
+│   ├── BBox_List_2017.csv        # Structured medical data
+│   ├── Data_Entry_2017.csv       # Patient data samples
+│   └── *.pdf                     # Additional medical documents
 └── requirements.txt               # Python dependencies
 ```
 
@@ -92,8 +101,9 @@ RAG-agents/
 - **Key Features**:
   - Medical query validation using LLM
   - Query analysis (intent, entity count, relationships)
-  - Routing decisions: `vector`, `graph`, `both`, or `none`
+  - Routing decisions: `vector`, `graph`, `both` (sequential execution), or `none`
   - Function-calling architecture for tool execution
+  - Smart routing logic to determine optimal retrieval strategy
 
 #### **VectorRAGAgent** 
 - **Purpose**: Semantic similarity search with hybrid capabilities
@@ -115,8 +125,10 @@ RAG-agents/
 - **Purpose**: Result validation and final answer composition
 - **Key Features**:
   - Consistency checking between retrieval sources
-  - LLM-powered answer synthesis
+  - LLM-powered answer synthesis from single or multiple agent results
   - Citation generation and confidence scoring
+  - Handling of sequential agent execution results (when routing is "both")
+  - Quality assurance for combined vector and graph retrieval outputs
 
 ### 2. Document Ingestion Pipeline
 
@@ -185,212 +197,326 @@ RAG-agents/
   - Temporal progression tracking
   - Complex Cypher query support
 
-### 4. API Layer
+### 4. User Interface Layer
 
-**Location**: `src/agents/api.py`
+**Location**: `src/agents/streamlit_app.py`
 
-#### **FastAPI REST API**
-- **Endpoints**:
-  - `POST /query` - Main query processing
-  - `GET /health` - Health checks
-  - `GET /metrics` - Prometheus metrics
-  - `GET /workflow/info` - Workflow structure info
+#### **Streamlit Web Interface**
+- **Purpose**: Interactive web-based frontend for the RAG system
+- **Key Features**:
+  - Professional responsive design with custom CSS styling
+  - Real-time query processing with status indicators
+  - Example queries for medical and research scenarios
+  - Session state management and error handling
+  - Live workflow initialization and health monitoring
+  - Query history and result caching
 
+#### **Direct Python Integration**
+- **File**: `src/main.py`
+- **Purpose**: Direct programmatic access and batch processing
 - **Features**:
-  - CORS support for web integration
-  - Request/response validation
-  - Error handling and logging
-  - Prometheus metrics integration
+  - Document ingestion from Azure Blob Storage or local directories
+  - Command-line interface for bulk operations
+  - Integration testing and workflow validation
 
-### 5. Infrastructure Components
+### 5. Security & Infrastructure Layer
+
+**Location**: `src/core/`
+
+#### **Azure Key Vault Integration**
+- **File**: `azure_keyvault_manager.py`
+- **Purpose**: Centralized secrets management using Azure Key Vault
+- **Features**:
+  - Azure CLI authentication with DefaultAzureCredential
+  - Fallback to `.env.dev` files for development environments
+  - Configurable Key Vault enablement via `Keyvalue_Enabled` flag
+  - Secure retrieval of API keys, connection strings, and sensitive data
+  - Environment-specific configuration management
+
+#### **Security Middleware & Validation**
+- **Files**: `security_middleware.py`, `security_validator.py`, `input_sanitization.py`
+- **Purpose**: Multi-layered security protection
+- **Features**:
+  - Advanced input sanitization and validation
+  - Prompt injection attack prevention
+  - Query security validation with configurable policies
+  - Secure agent communication patterns
+  - Role-based access control enforcement
 
 #### **Observability & Monitoring**
-- **File**: `src/agents/observability.py`
+- **File**: `observability.py`
+- **Purpose**: Comprehensive system monitoring and tracing
 - **Features**:
-  - Performance measurement per agent
-  - Memory usage tracking
-  - LangSmith integration for tracing
-  - Structured logging with trace IDs
-
-#### **Security & Governance**
-- **File**: `src/agents/tool_governance.py`
-- **Features**:
-  - Role-based access control for tools
-  - Agent permission management
-  - Secure tool invocation
-  - Access denied error handling
-
-#### **Centralized Logging**
-- **File**: `src/agents/logging_config.py`
-- **Features**:
-  - Structured JSON logging
-  - Configurable log levels
-  - Trace ID correlation
-  - Production-ready formatting
+  - LangSmith integration for AI workflow tracing
+  - Performance measurement per agent with timing metrics
+  - Memory usage tracking and resource monitoring
+  - Structured logging with correlation IDs
+  - Custom metrics for workflow performance analysis
 
 ## Data Flow
 
 ### 1. Document Ingestion Flow
 
 ```
-Document Input → Classification Engine → Type-Specific Processor
-                                      ↓
-Mixed Documents → PDF Extractor → Content Separation
-                                      ↓
-            ┌─────────────────┬─────────────────┐
-            ▼                 ▼                 ▼
-    Vector Storage    Graph Storage    Metadata Storage
-    (Qdrant)         (Neo4j)          (File System)
+Document Input → Azure Blob Storage / Local Directory → Classification Engine
+                                                               ↓
+                               Type-Specific Processor Selection
+                                                               ↓
+        ┌──────────────────────┬──────────────────────┬──────────────────────┐
+        ▼                      ▼                      ▼                      ▼
+  Structured Data         Unstructured Text      Mixed Documents       PDF Extraction
+   (CSV, Excel)           (Plain Text)          (Research Papers)     (Tables + Text)
+        ↓                      ↓                      ↓                      ↓
+Entity Extraction      Text Chunking         Content Separation      Multimodal Processing
+        ↓                      ↓                      ↓                      ↓
+    ┌───────────────────────────┼──────────────────────────┼───────────────────────┐
+    ▼                          ▼                          ▼                       ▼
+Vector Storage             Graph Storage           Metadata Storage      Azure Blob Storage
+ (Qdrant)                  (Neo4j)               (File System)         (Document Archive)
 ```
 
 ### 2. Query Processing Flow
 
 ```
-User Query → FastAPI → Orchestrator Agent → Route Decision
-                                          ↓
-                    ┌─────────────────┬─────────────────┐
-                    ▼                 ▼                 ▼
-            Vector RAG Agent    Graph RAG Agent    Both Agents
-                    ↓                 ↓                 ↓
-            Qdrant Search      Neo4j Queries     Combined Results
-                    ↓                 ↓                 ↓
-                    └─────────────────┼─────────────────┘
+User Input → Streamlit Interface / Direct API → Security Middleware
+                                                       ↓
+                            Query Sanitization & Validation
+                                                       ↓
+                              Orchestrator Agent → Route Decision
+                                                       ↓
+                    ┌─────────────────┬─────────────────┬─────────────────┐
+                    ▼                 ▼                 ▼                 ▼
+            "vector" only      "graph" only       "both"              "none"
+                    ↓                 ↓                 ↓                 ↓
+            Vector RAG Agent    Graph RAG Agent   Vector → Graph     No Retrieval
+                    ↓                 ↓            (Sequential)           ↓
+            Qdrant Search      Neo4j Queries    Combined Results    Direct Response
+                    ↓                 ↓                 ↓                 ↓
+                    └─────────────────┼─────────────────┼─────────────────┘
                                       ▼
-                            Validator Agent → Answer Synthesis → Final Response
+            Validator Agent → Answer Synthesis → Response + Citations
+                                      ↓
+                              LangSmith Tracing & Logging
 ```
 
 ## Technology Stack
 
 ### **Core Frameworks**
-- **LangGraph**: Multi-agent workflow orchestration
-- **LangChain**: AI/LLM integration and tools
-- **FastAPI**: Modern Python web framework
-- **Pydantic**: Data validation and serialization
+- **LangGraph**: Multi-agent workflow orchestration and state management
+- **LangChain**: AI/LLM integration, tools, and document processing
+- **Streamlit**: Interactive web interface and user experience
+- **Pydantic**: Data validation, serialization, and type safety
 
 ### **AI/ML Components**
-- **Azure OpenAI**: GPT-4 for reasoning and synthesis
-- **SentenceTransformers**: Text embeddings
-- **HuggingFace**: Alternative embedding models
+- **Azure OpenAI**: GPT-4o-mini for reasoning, analysis, and synthesis
+- **SentenceTransformers**: High-quality text embeddings for semantic search
+- **LangSmith**: AI workflow tracing, debugging, and performance monitoring
 
-### **Databases**
-- **Qdrant**: Vector similarity search
-- **Neo4j**: Graph database for relationships
+### **Databases & Storage**
+- **Qdrant**: High-performance vector similarity search and semantic retrieval
+- **Neo4j**: Graph database for complex relationships and entity connections
+- **Azure Blob Storage**: Document storage and archival with secure access
 
 ### **Document Processing**
-- **PyMuPDF4LLM**: PDF text extraction
-- **PDFPlumber**: Table extraction from PDFs
-- **Pandas**: Structured data manipulation
+- **PyMuPDF4LLM**: Advanced PDF text extraction with layout preservation
+- **PDFPlumber**: Precise table extraction and structured data parsing
+- **Pandas**: Structured data manipulation and analysis
+- **Pillow**: Image processing and extraction from documents
 
-### **Infrastructure**
-- **Prometheus**: Metrics and monitoring
-- **Structlog**: Structured logging
-- **Docker**: Containerization
-- **Python-dotenv**: Environment management
+### **Cloud & Security**
+- **Azure Key Vault**: Centralized secrets management and secure configuration
+- **Azure Identity**: Authentication and access control integration
+- **Azure Storage**: Scalable blob storage with secure access patterns
+
+### **Infrastructure & Monitoring**
+- **Structlog**: Structured logging with correlation and tracing
+- **LangSmith**: Comprehensive observability for AI workflows
+- **Python-dotenv**: Environment configuration management
 
 ## Configuration & Environment
 
 ### **Environment Variables**
 ```bash
-# Azure OpenAI
+# Azure Key Vault Configuration
+AZURE_KEY_VAULT_URL=https://your-keyvault.vault.azure.net/
+Keyvalue_Enabled=true  # Set to 'false' for local development
+
+# Azure OpenAI (stored in Key Vault or .env.dev)
 AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini
 AZURE_OPENAI_API_VERSION=2024-08-01-preview
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-ada-002
 
-# Qdrant Configuration
+# Qdrant Configuration (stored in Key Vault or .env.dev)
 QDRANT_API_URL=http://localhost:6333
 QDRANT_API_KEY=your_api_key
 QDRANT_COLLECTION=documents
 
-# Neo4j Configuration
+# Neo4j Configuration (stored in Key Vault or .env.dev)
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=password
+
+# Azure Storage (stored in Key Vault or .env.dev)
+AZURE_STORAGE_ACCOUNT_NAME=your_storage_account
+AZURE_STORAGE_ACCOUNT_KEY=your_storage_key
+AZURE_BLOB_CONTAINER_NAME=rag-agents-container
 
 # Logging Configuration
 LOG_LEVEL=INFO
 ENABLE_JSON_LOGS=true
 ENABLE_COLORED_LOGS=false
+
+# LangSmith Tracing (optional)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your_langsmith_key
 ```
+
+### **Security Configuration**
+The system uses a dual-mode configuration approach:
+- **Production Mode**: `Keyvalue_Enabled=true` - All secrets retrieved from Azure Key Vault
+- **Development Mode**: `Keyvalue_Enabled=false` - Secrets loaded from `.env.dev` file
+
+This ensures secure secret management in production while maintaining development flexibility.
 
 ## Deployment Architecture
 
-### **Container Setup**
-- **Docker Compose**: Multi-service orchestration
-- **Services**: 
-  - RAG Application
-  - Qdrant Vector DB
-  - Neo4j Graph DB
-  - Prometheus Monitoring
+### **Current Implementation**
+- **Streamlit Web Application**: Interactive frontend with real-time query processing
+- **Azure Cloud Integration**: Key Vault for secrets, Blob Storage for documents
+- **Local Development**: Environment-based configuration with fallback mechanisms
+- **Standalone Deployment**: Single Python application with integrated components
+
+### **Database Requirements**
+- **Qdrant Vector DB**: For semantic search and document retrieval
+- **Neo4j Graph DB**: For entity relationships and knowledge graphs
+- **Azure Blob Storage**: For document storage and archival
 
 ### **Scalability Considerations**
-- **Horizontal Scaling**: Multiple API instances
-- **Database Scaling**: Qdrant cluster, Neo4j clustering
-- **Caching**: Redis for frequent queries
-- **Load Balancing**: Nginx/HAProxy for API distribution
+- **Horizontal Scaling**: Multiple Streamlit instances with load balancing
+- **Database Scaling**: Qdrant cluster deployment, Neo4j clustering
+- **Caching Strategy**: Query result caching with session state management
+- **Azure Auto-scaling**: Serverless functions for document processing
 
 ## Security Features
 
-### **Access Control**
-- Role-based agent permissions
-- Tool-level access restrictions
-- Secure tool invocation patterns
+### **Multi-Layered Security Architecture**
+- **Azure Key Vault Integration**: Centralized secrets management with Azure CLI authentication
+- **Input Sanitization**: Advanced query validation and prompt injection prevention
+- **Security Middleware**: Request validation and security violation detection
+- **Role-Based Access**: Agent permission management and tool governance
 
-### **Data Security**
-- Environment-based configuration
-- Secure database connections
-- API request validation
+### **Data Protection**
+- **Azure Managed Identity**: Secure service-to-service authentication
+- **Environment Isolation**: Separate configurations for development and production
+- **Secure Communication**: Encrypted connections to all external services
+- **Audit Logging**: Comprehensive security event tracking
 
-### **Monitoring & Logging**
-- Comprehensive audit trails
-- Performance monitoring
-- Error tracking and alerting
+### **Compliance & Monitoring**
+- **LangSmith Integration**: AI workflow tracing with data privacy controls
+- **Structured Logging**: Correlation IDs and security event tracking
+- **Performance Monitoring**: Real-time system health and usage metrics
+- **Error Handling**: Graceful degradation and security violation responses
 
 ## Performance Optimizations
 
-### **Ingestion Pipeline**
-- Batch processing for vector ingestion
-- Parallel document processing
-- Efficient chunking strategies
+### **Ingestion Pipeline Optimizations**
+- **Azure Blob Storage Integration**: Scalable document storage with automatic ingestion
+- **Parallel Document Processing**: Multi-threaded processing for large document sets
+- **Intelligent Document Classification**: Automatic routing to appropriate processors
+- **Batch Vector Ingestion**: Efficient embedding generation and storage
+- **Streaming Document Processing**: Real-time ingestion for continuous updates
 
-### **Query Processing**
-- Adaptive hybrid search weighting
-- Smart routing decisions
-- Result caching capabilities
+### **Query Processing Optimizations**
+- **Adaptive Hybrid Search**: Dynamic weighting between vector and keyword search
+- **Smart Agent Routing**: Intelligent decisions to minimize processing overhead
+- **Sequential Agent Execution**: Efficient orchestration when both vector and graph retrieval are needed
+- **Result Caching**: Session-based caching for repeated queries
+- **LangSmith Tracing**: Performance monitoring and optimization insights
 
-### **Database Optimizations**
-- Vector index optimization
-- Graph query optimization
-- Connection pooling
+### **Database & Storage Optimizations**
+- **Qdrant Collection Management**: Optimized vector indexing and search parameters
+- **Neo4j Query Optimization**: Efficient Cypher queries for graph traversal
+- **Azure Blob Tiering**: Cost-effective storage with intelligent data lifecycle
+- **Connection Pooling**: Efficient database connection management
 
 ## Future Enhancements
 
 ### **Planned Features**
-- Advanced entity relationship modeling
-- Multi-modal document support (images, audio)
-- Real-time collaborative filtering
-- Advanced caching strategies
+- **Enhanced Security Implementation**: Complete Azure native security roadmap
+- **Advanced Multi-Modal Support**: Image analysis integration with text processing
+- **Real-Time Collaboration**: Multi-user support with shared workspaces
+- **Advanced Analytics Dashboard**: Query analytics and usage insights
+- **API Gateway Implementation**: RESTful API layer for external integrations
+- **Containerization**: Docker support for scalable deployments
 
-### **Scalability Improvements**
-- Microservices architecture
-- Event-driven processing
-- Distributed caching
-- Auto-scaling capabilities
+### **Azure Native Enhancements**
+- **Azure Functions Integration**: Serverless document processing pipelines
+- **Azure Cognitive Services**: Enhanced OCR and document understanding
+- **Azure Application Insights**: Advanced application performance monitoring
+- **Azure API Management**: Professional API gateway with rate limiting
+- **Azure Container Instances**: Scalable container deployments
+
+### **AI & ML Improvements**
+- **Fine-Tuned Embeddings**: Domain-specific medical embeddings
+- **Advanced RAG Techniques**: Retrieval augmentation with reasoning
+- **Multi-Agent Collaboration**: Enhanced agent communication protocols
+- **Adaptive Learning**: Query performance optimization through feedback
 
 ## Getting Started
 
 ### **Prerequisites**
-- Python 3.9+
-- Docker & Docker Compose
-- Access to Azure OpenAI
-- Qdrant and Neo4j instances
+- Python 3.9+ with pip package manager
+- Azure CLI configured for authentication
+- Access to Azure OpenAI service
+- Qdrant vector database (local or cloud)
+- Neo4j graph database (local or cloud)
+- Azure Key Vault (for production) or `.env.dev` file (for development)
 
 ### **Quick Start**
-1. Clone the repository
-2. Set up environment variables
-3. Run `docker-compose up -d`
-4. Start document ingestion: `python src/main.py`
-5. Query via API: `POST http://localhost:8000/query`
+1. **Clone and Setup**
+   ```bash
+   git clone <repository-url>
+   cd RAG-agents
+   pip install -r requirements.txt
+   ```
+
+2. **Configure Environment**
+   - For Development: Create `.env.dev` with all required secrets
+   - For Production: Configure Azure Key Vault and set `Keyvalue_Enabled=true`
+
+3. **Initialize Databases**
+   - Start Qdrant: `docker run -p 6333:6333 qdrant/qdrant`
+   - Start Neo4j: `docker run -p 7474:7474 -p 7687:7687 neo4j`
+
+4. **Ingest Documents**
+   ```bash
+   cd src
+   python main.py  # Processes documents from Azure Blob Storage or local directory
+   ```
+
+5. **Launch Web Interface**
+   ```bash
+   cd src/agents
+   streamlit run streamlit_app.py
+   ```
+
+6. **Access Application**
+   - Web Interface: `http://localhost:8501`
+   - Query medical documents and research papers through the interactive interface
+
+### **Development Setup**
+- Use `.env.dev` for local development with `Keyvalue_Enabled=false`
+- Configure local databases for testing
+- Enable LangSmith tracing for debugging workflows
+- Use Streamlit's development mode for real-time code updates
 
 ---
 
-*This architecture supports complex medical and research document analysis with intelligent routing, multi-modal retrieval, and comprehensive observability for production deployments.*
+*This architecture supports sophisticated medical and research document analysis through intelligent multi-agent orchestration, robust security implementations, and comprehensive Azure cloud integration. The system provides enterprise-grade observability, scalable processing capabilities, and an intuitive web interface for production deployments in healthcare and research environments.*
+
+**Key Differentiators:**
+- **Security-First Design**: Azure Key Vault integration with multi-layered validation
+- **Production-Ready**: Comprehensive logging, monitoring, and error handling
+- **User-Friendly**: Streamlit interface with professional styling and real-time feedback
+- **Cloud-Native**: Deep Azure integration for scalable, secure deployments
+- **Medical Domain Focus**: Specialized for healthcare documents and research papers

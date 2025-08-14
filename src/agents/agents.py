@@ -238,6 +238,40 @@ def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnal
                 rel_value = line.split('HAS_RELATIONSHIPS:')[1].strip().lower()
                 has_relationships = rel_value == 'true'
         
+        # Additional pattern-based validation for structured data queries
+        query_lower = query.lower()
+        structured_data_patterns = [
+            'total number', 'count', 'how many', 'number of patients',
+            'age less than', 'age greater than', 'age between',
+            'patients with', 'gender', 'male', 'female',
+            'average age', 'sum of', 'filter', 'where'
+        ]
+        
+        demographic_patterns = [
+            'age', 'gender', 'patient age', 'patient gender',
+            'less than', 'greater than', 'between'
+        ]
+        
+        # Override classification if clear structured data patterns detected
+        if any(pattern in query_lower for pattern in structured_data_patterns):
+            if intent == "FACTUAL":  # Only override if currently classified as FACTUAL
+                intent = "RELATIONAL"
+                has_relationships = True
+                logger.info("pattern_override_applied", 
+                           original_intent="FACTUAL", 
+                           new_intent="RELATIONAL",
+                           query=query[:100])
+        
+        # Additional check for demographic filtering
+        if any(pattern in query_lower for pattern in demographic_patterns) and ('patient' in query_lower or 'number' in query_lower):
+            if intent == "FACTUAL":
+                intent = "RELATIONAL"
+                has_relationships = True
+                logger.info("demographic_pattern_override_applied",
+                           original_intent="FACTUAL",
+                           new_intent="RELATIONAL", 
+                           query=query[:100])
+        
         logger.info("analyze_query_characteristics_completed",
                    intent=intent,
                    entity_count=entity_count,
@@ -252,7 +286,30 @@ def analyze_query_characteristics(query: str, llm: AzureChatOpenAI) -> QueryAnal
         
     except Exception as e:
         logger.warning("llm_analysis_failed", error=str(e), query=query[:100])
-        # Conservative fallback with basic defaults
+        
+        # Enhanced fallback with pattern-based classification
+        query_lower = query.lower()
+        structured_data_patterns = [
+            'total number', 'count', 'how many', 'number of patients',
+            'age less than', 'age greater than', 'age between',
+            'patients with', 'gender', 'male', 'female',
+            'average age', 'sum of', 'filter', 'where'
+        ]
+        
+        # Check if this looks like a structured data query
+        if any(pattern in query_lower for pattern in structured_data_patterns):
+            logger.info("analyze_query_characteristics_fallback_structured",
+                       fallback_intent="RELATIONAL",
+                       fallback_entity_count=2,
+                       fallback_has_relationships=True,
+                       detected_patterns=[p for p in structured_data_patterns if p in query_lower])
+            return QueryAnalysis(
+                intent="RELATIONAL",
+                entity_count=2,
+                has_relationships=True
+            )
+        
+        # Conservative fallback for other queries
         logger.info("analyze_query_characteristics_fallback",
                    fallback_intent="FACTUAL",
                    fallback_entity_count=1,

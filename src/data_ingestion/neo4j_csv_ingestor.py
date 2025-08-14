@@ -245,16 +245,8 @@ class Neo4jCSVIngestor:
                 
                 logger.info(f"Ingesting {node_type} nodes...")
                 
-                # Get unique values for this node type
-                if node_type == "Image":
-                    # For images, each row is a unique image
-                    node_data = self._extract_image_nodes(df)
-                elif node_type == "Finding":
-                    # For findings, get unique finding labels
-                    node_data = self._extract_finding_nodes(df)
-                else:
-                    # Generic node extraction
-                    node_data = self._extract_generic_nodes(df, node_schema)
+                # Dynamic node extraction based on CSV structure
+                node_data = self._extract_nodes_dynamic(df, node_schema)
                 
                 # Create nodes in batch
                 nodes_created = self._create_nodes_batch(session, node_type, labels, node_data)
@@ -264,37 +256,140 @@ class Neo4jCSVIngestor:
         
         return total_nodes_created
     
-    def _extract_image_nodes(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
-        """Extract image node data from DataFrame"""
+    def _extract_nodes_dynamic(self, df: pd.DataFrame, node_schema) -> List[Dict[str, Any]]:
+        """Dynamically extract nodes based on CSV structure and schema"""
+        nodes = []
+        
+        # Detect CSV type based on columns
+        csv_columns = df.columns.tolist()
+        
+        if node_schema.node_type == "Patient":
+            nodes = self._extract_patient_nodes(df)
+        elif node_schema.node_type == "Finding":
+            nodes = self._extract_finding_nodes_dynamic(df)
+        elif node_schema.node_type == "Image":
+            nodes = self._extract_image_nodes_dynamic(df)
+        else:
+            # Generic extraction for any other node types
+            nodes = self._extract_generic_nodes(df, node_schema)
+        
+        return nodes
+    
+    def _extract_patient_nodes(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """Extract patient nodes from Data_Entry_2017.csv format - handles longitudinal data"""
+        patient_nodes = []
+        
+        # Check if this CSV has patient data
+        if 'Patient ID' not in df.columns:
+            return patient_nodes
+        
+        # For longitudinal data, create a patient node for each unique (Patient ID, Age) combination
+        # This allows us to track patients at different ages
+        unique_patient_ages = df[['Patient ID', 'Patient Age', 'Patient Gender']].dropna().drop_duplicates()
+        
+        for _, row in unique_patient_ages.iterrows():
+            patient_id = row['Patient ID']
+            age = row['Patient Age']
+            gender = row['Patient Gender']
+            
+            # Create unique ID combining patient and age for longitudinal tracking
+            unique_id = f"{patient_id}_{age}"
+            
+            node_data = {
+                'id': unique_id,
+                'patient_id': str(patient_id),
+                'age': int(age),
+                'gender': str(gender),
+                'original_patient_id': str(patient_id)  # Keep original for reference
+            }
+            
+            patient_nodes.append(node_data)
+            
+        logger.info(f"Extracted {len(patient_nodes)} patient-age combinations (longitudinal data)")
+        return patient_nodes
+    
+    def _extract_finding_nodes_dynamic(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """Extract finding nodes from either CSV format"""
+        finding_nodes = []
+        
+        # Determine finding column name
+        finding_column = None
+        if 'Finding Labels' in df.columns:
+            finding_column = 'Finding Labels'
+        elif 'Finding Label' in df.columns:
+            finding_column = 'Finding Label'
+        else:
+            logger.warning("No finding column found in CSV")
+            return finding_nodes
+        
+        # Get all findings (including pipe-separated ones)
+        all_findings = set()
+        
+        for _, row in df.iterrows():
+            if pd.notna(row[finding_column]):
+                finding_value = str(row[finding_column])
+                
+                # Handle pipe-separated findings (e.g., "Cardiomegaly|Emphysema")
+                if '|' in finding_value:
+                    findings = finding_value.split('|')
+                    for finding in findings:
+                        all_findings.add(finding.strip())
+                else:
+                    all_findings.add(finding_value.strip())
+        
+        # Create finding nodes
+        for finding in all_findings:
+            if finding and finding != 'No Finding':  # Skip empty and "No Finding"
+                # Count occurrences
+                count = 0
+                for _, row in df.iterrows():
+                    if pd.notna(row[finding_column]):
+                        finding_value = str(row[finding_column])
+                        if finding in finding_value.split('|'):
+                            count += 1
+                
+                node_data = {
+                    'name': finding,
+                    'finding_label': finding,
+                    'occurrence_count': count
+                }
+                finding_nodes.append(node_data)
+        
+        logger.info(f"Extracted {len(finding_nodes)} unique findings")
+        return finding_nodes
+    
+    def _extract_image_nodes_dynamic(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """Extract image nodes from either CSV format"""
         image_nodes = []
+        
+        if 'Image Index' not in df.columns:
+            return image_nodes
         
         for _, row in df.iterrows():
             if pd.notna(row['Image Index']):
                 node_data = {
-                    'image_index': str(row['Image Index']),
-                    'bbox_x': float(row['Bbox [x']) if pd.notna(row['Bbox [x']) else 0.0,
-                    'bbox_y': float(row['y']) if pd.notna(row['y']) else 0.0,
-                    'bbox_width': float(row['w']) if pd.notna(row['w']) else 0.0,
-                    'bbox_height': float(row['h]']) if pd.notna(row['h]']) else 0.0,
+                    'id': str(row['Image Index']),
+                    'image_index': str(row['Image Index'])
                 }
+                
+                # Add bbox data if available (BBox_List_2017.csv format)
+                if 'Bbox [x' in df.columns:
+                    node_data['bbox_x'] = float(row['Bbox [x']) if pd.notna(row['Bbox [x']) else 0.0
+                    if 'y' in df.columns:
+                        node_data['bbox_y'] = float(row['y']) if pd.notna(row['y']) else 0.0
+                    if 'w' in df.columns:
+                        node_data['bbox_width'] = float(row['w']) if pd.notna(row['w']) else 0.0
+                    if 'h' in df.columns:
+                        node_data['bbox_height'] = float(row['h']) if pd.notna(row['h']) else 0.0
+                
+                # Add other image properties if available (Data_Entry_2017.csv format)
+                if 'View Position' in df.columns and pd.notna(row['View Position']):
+                    node_data['view_position'] = str(row['View Position'])
+                    
                 image_nodes.append(node_data)
         
+        logger.info(f"Extracted {len(image_nodes)} image nodes")
         return image_nodes
-    
-    def _extract_finding_nodes(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
-        """Extract finding node data from DataFrame"""
-        # Get unique findings
-        unique_findings = df['Finding Label'].dropna().unique()
-        
-        finding_nodes = []
-        for finding in unique_findings:
-            node_data = {
-                'finding_label': str(finding),
-                'occurrence_count': int(df[df['Finding Label'] == finding].shape[0])
-            }
-            finding_nodes.append(node_data)
-        
-        return finding_nodes
     
     def _extract_generic_nodes(self, df: pd.DataFrame, node_schema) -> List[Dict[str, Any]]:
         """Generic node extraction for any node type"""
@@ -345,46 +440,172 @@ class Neo4jCSVIngestor:
             return 0
         
         with self.driver.session() as session:
+            # Always create Patient-Finding relationships if patient data exists
+            if 'Patient ID' in df.columns:
+                patient_finding_rels = self._create_patient_finding_relationships(session, df)
+                total_relationships_created += patient_finding_rels
+                logger.info(f"Created {patient_finding_rels} Patient-Finding relationships")
+            
+            # Create Image-Finding relationships
+            if 'Image Index' in df.columns:
+                image_finding_rels = self._create_image_finding_relationships_dynamic(session, df)
+                total_relationships_created += image_finding_rels
+                logger.info(f"Created {image_finding_rels} Image-Finding relationships")
+            
+            # Create any additional relationships from schema
             for rel_schema in schema.relationships:
-                logger.info(f"Creating {rel_schema.relationship_type} relationships...")
-                
-                # Create relationships based on the schema
-                if rel_schema.source_node == "Image" and rel_schema.target_node == "Finding":
-                    relationships_created = self._create_image_finding_relationships(session, df)
-                else:
+                if rel_schema.relationship_type not in ['HAS_FINDING']:  # Skip already created
                     relationships_created = self._create_generic_relationships(session, rel_schema, df)
-                
-                total_relationships_created += relationships_created
-                logger.info(f"Created {relationships_created} {rel_schema.relationship_type} relationships")
+                    total_relationships_created += relationships_created
+                    logger.info(f"Created {relationships_created} {rel_schema.relationship_type} relationships")
         
         return total_relationships_created
     
-    def _create_image_finding_relationships(self, session, df: pd.DataFrame) -> int:
-        """Create relationships between images and findings"""
+    def _create_patient_finding_relationships(self, session, df: pd.DataFrame) -> int:
+        """Create Patient-Finding relationships that GraphRAG agent expects - handles longitudinal data"""
+        if 'Patient ID' not in df.columns:
+            return 0
+            
+        # Determine finding column name
+        finding_column = None
+        if 'Finding Labels' in df.columns:
+            finding_column = 'Finding Labels'
+        elif 'Finding Label' in df.columns:
+            finding_column = 'Finding Label'
+        else:
+            return 0
+        
         cypher = """
         UNWIND $relationships AS rel
-        MATCH (img:Image {image_index: rel.image_index})
-        MATCH (finding:Finding {finding_label: rel.finding_label})
-        CREATE (img)-[:HAS_FINDING {
-            bbox_x: rel.bbox_x,
-            bbox_y: rel.bbox_y, 
-            bbox_width: rel.bbox_width,
-            bbox_height: rel.bbox_height
-        }]->(finding)
+        MATCH (p:Patient {id: rel.patient_id})
+        MATCH (f:Finding {name: rel.finding_name})
+        MERGE (p)-[:HAS_FINDING]->(f)
         """
         
         relationships_data = []
+        
         for _, row in df.iterrows():
-            if pd.notna(row['Image Index']) and pd.notna(row['Finding Label']):
-                rel_data = {
-                    'image_index': str(row['Image Index']),
-                    'finding_label': str(row['Finding Label']),
-                    'bbox_x': float(row['Bbox [x']) if pd.notna(row['Bbox [x']) else 0.0,
-                    'bbox_y': float(row['y']) if pd.notna(row['y']) else 0.0,
-                    'bbox_width': float(row['w']) if pd.notna(row['w']) else 0.0,
-                    'bbox_height': float(row['h]']) if pd.notna(row['h]']) else 0.0,
-                }
-                relationships_data.append(rel_data)
+            if pd.notna(row['Patient ID']) and pd.notna(row['Patient Age']) and pd.notna(row[finding_column]):
+                patient_id = str(row['Patient ID'])
+                age = int(row['Patient Age'])
+                unique_patient_id = f"{patient_id}_{age}"  # Use the same format as patient nodes
+                finding_value = str(row[finding_column])
+                
+                # Handle pipe-separated findings
+                if '|' in finding_value:
+                    findings = finding_value.split('|')
+                    for finding in findings:
+                        finding = finding.strip()
+                        if finding and finding != 'No Finding':
+                            relationships_data.append({
+                                'patient_id': unique_patient_id,
+                                'finding_name': finding
+                            })
+                else:
+                    finding = finding_value.strip()
+                    if finding and finding != 'No Finding':
+                        relationships_data.append({
+                            'patient_id': unique_patient_id,
+                            'finding_name': finding
+                        })
+        
+        # Remove duplicates
+        unique_relationships = []
+        seen = set()
+        for rel in relationships_data:
+            key = (rel['patient_id'], rel['finding_name'])
+            if key not in seen:
+                seen.add(key)
+                unique_relationships.append(rel)
+        
+        try:
+            session.run(cypher, relationships=unique_relationships)
+            return len(unique_relationships)
+        except Exception as e:
+            logger.error(f"Failed to create patient-finding relationships: {e}")
+            return 0
+    
+    def _create_image_finding_relationships_dynamic(self, session, df: pd.DataFrame) -> int:
+        """Create Image-Finding relationships for both CSV formats"""
+        if 'Image Index' not in df.columns:
+            return 0
+            
+        # Determine finding column name
+        finding_column = None
+        if 'Finding Labels' in df.columns:
+            finding_column = 'Finding Labels'
+        elif 'Finding Label' in df.columns:
+            finding_column = 'Finding Label'
+        else:
+            return 0
+        
+        # Check if this is BBox format (has bbox coordinates)
+        has_bbox = 'Bbox [x' in df.columns
+        
+        if has_bbox:
+            cypher = """
+            UNWIND $relationships AS rel
+            MATCH (img:Image {id: rel.image_index})
+            MATCH (finding:Finding {name: rel.finding_name})
+            MERGE (img)-[:HAS_FINDING {
+                bbox_x: rel.bbox_x,
+                bbox_y: rel.bbox_y, 
+                bbox_width: rel.bbox_width,
+                bbox_height: rel.bbox_height
+            }]->(finding)
+            """
+        else:
+            cypher = """
+            UNWIND $relationships AS rel
+            MATCH (img:Image {id: rel.image_index})
+            MATCH (finding:Finding {name: rel.finding_name})
+            MERGE (img)-[:HAS_FINDING]->(finding)
+            """
+        
+        relationships_data = []
+        
+        for _, row in df.iterrows():
+            if pd.notna(row['Image Index']) and pd.notna(row[finding_column]):
+                image_index = str(row['Image Index'])
+                finding_value = str(row[finding_column])
+                
+                # Handle pipe-separated findings
+                if '|' in finding_value:
+                    findings = finding_value.split('|')
+                    for finding in findings:
+                        finding = finding.strip()
+                        if finding and finding != 'No Finding':
+                            rel_data = {
+                                'image_index': image_index,
+                                'finding_name': finding
+                            }
+                            
+                            if has_bbox:
+                                rel_data.update({
+                                    'bbox_x': float(row['Bbox [x']) if pd.notna(row['Bbox [x']) else 0.0,
+                                    'bbox_y': float(row['y']) if pd.notna(row['y']) else 0.0,
+                                    'bbox_width': float(row['w']) if pd.notna(row['w']) else 0.0,
+                                    'bbox_height': float(row['h']) if pd.notna(row['h']) else 0.0,
+                                })
+                            
+                            relationships_data.append(rel_data)
+                else:
+                    finding = finding_value.strip()
+                    if finding and finding != 'No Finding':
+                        rel_data = {
+                            'image_index': image_index,
+                            'finding_name': finding
+                        }
+                        
+                        if has_bbox:
+                            rel_data.update({
+                                'bbox_x': float(row['Bbox [x']) if pd.notna(row['Bbox [x']) else 0.0,
+                                'bbox_y': float(row['y']) if pd.notna(row['y']) else 0.0,
+                                'bbox_width': float(row['w']) if pd.notna(row['w']) else 0.0,
+                                'bbox_height': float(row['h']) if pd.notna(row['h']) else 0.0,
+                            })
+                        
+                        relationships_data.append(rel_data)
         
         try:
             session.run(cypher, relationships=relationships_data)
@@ -458,7 +679,8 @@ class Neo4jCSVIngestor:
 
 def main():
     """Example usage"""
-    csv_file = "doc-ingestion/BBox_List_2017.csv"
+    # Use the correct path to Data_Entry_2017.csv which has patient information
+    csv_file = r"c:\Users\udaybhanu.dutta\HCL work\Gen AI\Agents\LangGraph_projects\RAG-agents\doc-ingestion\Data_Entry_2017.csv"
     
     # Initialize Neo4j ingestor using keyvault manager (falls back to .env.dev when keyvault is disabled)
     with Neo4jCSVIngestor() as ingestor:
@@ -481,26 +703,39 @@ def main():
         print(f"  Nodes: {stats['nodes']}")
         print(f"  Relationships: {stats['relationships']}")
         
-        # Example queries
+        # Example queries that match what GraphRAG agent expects
         print(f"\nExample Queries:")
         
-        # Find images with Atelectasis
+        # Test the exact query that was failing
         query1 = """
-        MATCH (img:Image)-[:HAS_FINDING]->(f:Finding {finding_label: 'Atelectasis'})
-        RETURN img.image_index, f.finding_label
+        MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) 
+        WHERE p.age < 40 
+        RETURN p.id as patient_id, p.age as age, p.gender as gender, f.name as finding
         LIMIT 5
         """
         results1 = ingestor.query_graph(query1)
-        print(f"Images with Atelectasis: {len(results1)} found")
+        print(f"Patients under 40 with findings: {len(results1)} found")
+        for result in results1[:3]:
+            print(f"  Patient {result['patient_id']}: {result['age']}yo {result['gender']}, finding: {result['finding']}")
         
-        # Count findings by type
+        # Count patients by gender
         query2 = """
-        MATCH (f:Finding)
-        RETURN f.finding_label, f.occurrence_count
-        ORDER BY f.occurrence_count DESC
+        MATCH (p:Patient)
+        RETURN p.gender, count(*) as count
+        ORDER BY count DESC
         """
         results2 = ingestor.query_graph(query2)
-        print(f"Finding types: {len(results2)} different findings")
+        print(f"Patients by gender: {results2}")
+        
+        # Count findings by type
+        query3 = """
+        MATCH (f:Finding)
+        RETURN f.name, f.occurrence_count
+        ORDER BY f.occurrence_count DESC
+        LIMIT 10
+        """
+        results3 = ingestor.query_graph(query3)
+        print(f"Top findings: {results3}")
 
 
 if __name__ == "__main__":

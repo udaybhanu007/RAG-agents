@@ -257,8 +257,8 @@ QUERY_ANALYSIS_TEMPLATE = """
 Analyze this medical query and classify its characteristics:
 
 INTENT TYPES:
-- FACTUAL: Seeks specific facts, definitions, symptoms, procedures
-- RELATIONAL: Explores connections, relationships, interactions between entities
+- FACTUAL: Seeks simple definitions, single entity facts (e.g., "What is pneumonia?")
+- RELATIONAL: Explores connections, relationships, structured data queries, demographics, filtering, aggregations
 - ANALYTICAL: Requires comparison, evaluation, analysis of multiple aspects
 
 ENTITY COUNT: Count distinct medical entities, conditions, procedures, demographics, or concepts:
@@ -267,19 +267,30 @@ ENTITY COUNT: Count distinct medical entities, conditions, procedures, demograph
 - 2: Two distinct main entities 
 - 3: Three or more main entities
 
-RELATIONSHIPS: Does the query ask about connections, correlations, or interactions?
+RELATIONSHIPS: Does the query ask about connections, correlations, interactions, or structured data analysis?
 IMPORTANT: Medical queries often have implicit relationships:
 - Patient + findings = relationship (medical history, patient findings)
 - Condition + progression = relationship (disease progression) 
 - Findings + locations = relationship (anatomical relationships)
 - Patient + demographics = relationship (patient characteristics)
 - Time + changes = relationship (progression, evolution)
+- Structured data queries = relationship (CSV/database filtering, aggregations)
 
 Look for these relationship indicators:
 - Explicit: "relationship", "connection", "between", "affects", "causes", "leads to"
 - Implicit: "history", "progression", "findings", "characteristics", "demographics", "locations", "dimensions"
 - Temporal: "over time", "progression", "changes", "evolution"
 - Medical context: "patient + findings", "condition + symptoms", "treatment + outcomes"
+- Structured data patterns: "total number", "count", "average", "sum", filtering with conditions
+- Demographic filtering: "age less than", "gender", "patients with", conditional aggregations
+- CSV/Database queries: Any query involving filtering, counting, or aggregating data fields
+
+SPECIAL CASES - These are ALWAYS RELATIONAL:
+- Queries with demographic filters (age, gender, etc.)
+- Aggregation queries (count, total, average, sum) with conditions
+- Queries involving "patients with X condition"
+- Data filtering or conditional queries from structured sources
+- Queries combining multiple data fields or attributes
 
 <USER_QUERY>{user_query}</USER_QUERY>
 

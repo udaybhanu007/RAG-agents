@@ -158,6 +158,57 @@ def load_custom_css():
         outline: none !important;
     }
     
+    /* Text Input styling - Make it white and prominent */
+    .stTextInput input {
+        background: #ffffff !important;
+        border: 2px solid #e2e8f0 !important;
+        border-radius: var(--border-radius-sm) !important;
+        padding: calc(var(--spacing-unit) * 2) !important;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 1rem !important;
+        line-height: 1.5 !important;
+        transition: all 0.2s ease-in-out !important;
+        color: #1e293b !important;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05) !important;
+        height: 3rem !important; /* Match button height */
+        box-sizing: border-box !important;
+    }
+    
+    .stTextInput input:focus {
+        border-color: var(--primary-color) !important;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1), 0 2px 4px rgba(0, 0, 0, 0.05) !important;
+        outline: none !important;
+        background: #ffffff !important;
+    }
+    
+    .stTextInput input::placeholder {
+        color: #94a3b8 !important;
+        opacity: 1 !important;
+    }
+    
+    /* Text Input Label styling */
+    .stTextInput label {
+        color: var(--text-primary) !important;
+        font-weight: 600 !important;
+        font-size: 0.95rem !important;
+        margin-bottom: calc(var(--spacing-unit) * 1) !important;
+    }
+    
+    /* Button alignment fix - align with text input */
+    .element-container:has(.stButton) {
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: flex-end !important;
+        height: 100% !important;
+    }
+    
+    /* Ensure buttons align with input field bottom */
+    div[data-testid="column"]:has(.stButton) {
+        display: flex !important;
+        align-items: flex-end !important;
+        padding-top: 2rem !important; /* Account for label space */
+    }
+    
     /* Button styling */
     .stButton button {
         background: var(--primary-color) !important;
@@ -169,6 +220,10 @@ def load_custom_css():
         font-size: 1rem !important;
         transition: all 0.2s ease-in-out !important;
         box-shadow: var(--shadow-sm) !important;
+        height: 3rem !important; /* Match input field height */
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
     }
     
     .stButton button:hover {
@@ -310,89 +365,46 @@ def init_session_state():
         st.session_state.last_query = ""
 
 # Initialize the workflow
-@st.cache_resource
 def initialize_workflow():
-    """Initialize the Multi-Agent RAG Workflow with caching and progress tracking"""
+    """Initialize the Multi-Agent RAG Workflow silently without UI messages"""
     try:
-        import time
-        
-        # Create a progress container for better UX
-        progress_placeholder = st.empty()
-        
-        with progress_placeholder.container():
-            st.info("🔄 Initializing Multi-Agent RAG Workflow...")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Track initialization phases
-            start_time = time.time()
-            
-            status_text.text("Initializing security middleware...")
-            progress_bar.progress(10)
-            
-            status_text.text("Connecting to Azure OpenAI...")
-            progress_bar.progress(30)
-            
-            status_text.text("Setting up database connections...")
-            progress_bar.progress(50)
-            
-            status_text.text("Loading AI models...")
-            progress_bar.progress(70)
-            
-            status_text.text("Initializing agents...")
-            progress_bar.progress(85)
-            
-            # Actually create the workflow
-            workflow = MultiAgentRAGWorkflow()
-            
-            status_text.text("Building workflow graph...")
-            progress_bar.progress(95)
-            
-            progress_bar.progress(100)
-            elapsed_time = time.time() - start_time
-            
-            status_text.text(f"✅ Initialization complete! ({elapsed_time:.1f}s)")
-            
-            # Clear progress after a short delay
-            time.sleep(1)
-            progress_placeholder.empty()
-        
+        # Silent initialization without any UI progress messages
+        workflow = MultiAgentRAGWorkflow()
         return workflow, True, None
         
     except Exception as e:
-        progress_placeholder.empty()
         return None, False, str(e)
 
 def display_status_indicator(ready: bool, error: Optional[str] = None):
     """Display the current system status"""
-    if error:
-        st.markdown(f"""
-        <div class="status-indicator status-error">
-            ❌ Error: {error}
-        </div>
-        """, unsafe_allow_html=True)
-    elif ready:
-        st.markdown("""
-        <div class="status-indicator status-ready">
-            ✅ System Ready
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div class="status-indicator status-loading">
-            <div class="loading-spinner"></div>
-            ⏳ Initializing...
-        </div>
-        """, unsafe_allow_html=True)
+    # Commented out to remove system status messages
+    # if error:
+    #     st.markdown(f"""
+    #     <div class="status-indicator status-error">
+    #         ❌ Error: {error}
+    #     </div>
+    #     """, unsafe_allow_html=True)
+    # elif ready:
+    #     st.markdown("""
+    #     <div class="status-indicator status-ready">
+    #         ✅ System Ready
+    #     </div>
+    #     """, unsafe_allow_html=True)
+    # else:
+    #     st.markdown("""
+    #     <div class="status-indicator status-loading">
+    #         <div class="loading-spinner"></div>
+    #         ⏳ Initializing...
+    #     </div>
+    #     """, unsafe_allow_html=True)
+    pass  # Do nothing - no status messages displayed
 
 def display_example_queries():
-    """Display example queries in a compact format"""
+    """Display example queries without panel styling"""
     st.markdown("""
-    <div class="custom-card example-queries">
-        <h3 style="color: var(--text-primary); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600;">
-            💡 Example Queries
-        </h3>
-    </div>
+    <h3 style="color: var(--text-primary); margin-bottom: calc(var(--spacing-unit) * 2); font-size: 1rem; font-weight: 600; margin-top: calc(var(--spacing-unit) * 3);">
+        💡 Example Queries
+    </h3>
     """, unsafe_allow_html=True)
     
     # Reduced and more concise examples
@@ -502,43 +514,57 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Initialize workflow
-    workflow, workflow_ready, error = initialize_workflow()
-    st.session_state.workflow = workflow
-    st.session_state.workflow_ready = workflow_ready
+    # Initialize workflow silently
+    if 'workflow' not in st.session_state or st.session_state.workflow is None:
+        workflow, workflow_ready, error = initialize_workflow()
+        st.session_state.workflow = workflow
+        st.session_state.workflow_ready = workflow_ready
+        st.session_state.workflow_error = error
+    else:
+        workflow = st.session_state.workflow
+        workflow_ready = st.session_state.workflow_ready
+        error = st.session_state.get('workflow_error')
     
-    # Display status
+    # Display status (already hidden via display_status_indicator)
     display_status_indicator(workflow_ready, error)
     
     # Main interface
     if workflow_ready and workflow:
-        # Query input section - compact design
+        # Query input section - improved alignment
         st.markdown("### 💬 Ask Your Question")
         
-        # Query input with buttons in the same row
-        col1, col2, col3 = st.columns([6, 1, 1])
+        # Create container for better alignment
+        query_container = st.container()
         
-        with col1:
-            query = st.text_input(
-                "Enter your query:",
-                value=st.session_state.last_query,
-                placeholder="Enter your medical or data analysis query here...",
-                help="Ask questions about medical imaging, patient data, or request specific analysis",
-                label_visibility="collapsed"
-            )
-        
-        with col2:
-            search_clicked = st.button(
-                "🔍 Search",
-                type="primary",
-                use_container_width=True,
-                disabled=not query or not query.strip()
-            )
-        
-        with col3:
-            if st.button("🗑️ Clear", use_container_width=True):
-                st.session_state.last_query = ""
-                st.rerun()
+        with query_container:
+            # Query input with buttons in the same row
+            col1, col2, col3 = st.columns([6, 1, 1])
+            
+            with col1:
+                query = st.text_input(
+                    "Your Query:",
+                    value=st.session_state.last_query,
+                    placeholder="Enter your medical or data analysis query here...",
+                    help="Ask questions about medical imaging, patient data, or request specific analysis",
+                    label_visibility="visible"
+                )
+            
+            with col2:
+                # Add some spacing to align with input field
+                st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
+                search_clicked = st.button(
+                    "🔍 Search",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not query or not query.strip()
+                )
+            
+            with col3:
+                # Add same spacing for alignment
+                st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
+                if st.button("🗑️ Clear", use_container_width=True):
+                    st.session_state.last_query = ""
+                    st.rerun()
         
         # Process query
         if search_clicked and query and query.strip():
@@ -563,7 +589,13 @@ def main():
         """, unsafe_allow_html=True)
         
         if st.button("🔄 Retry Initialization"):
-            st.cache_resource.clear()
+            # Clear session state to force re-initialization
+            if 'workflow' in st.session_state:
+                del st.session_state.workflow
+            if 'workflow_ready' in st.session_state:
+                del st.session_state.workflow_ready
+            if 'workflow_error' in st.session_state:
+                del st.session_state.workflow_error
             st.rerun()
 
 if __name__ == "__main__":

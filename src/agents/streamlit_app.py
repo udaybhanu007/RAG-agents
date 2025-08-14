@@ -48,11 +48,22 @@ def load_custom_css():
         --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
     }
     
-    /* Hide Streamlit default elements */
+    /* Hide Streamlit default elements and reduce top spacing */
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
     footer {visibility: hidden;}
     .stDeployButton {display: none;}
+    
+    /* Remove default top padding from Streamlit */
+    .main .block-container {
+        padding-top: 1rem !important;
+    }
+    
+    /* Remove top margin from first element */
+    .main .block-container > div:first-child {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+    }
     
     /* Main app container */
     .stApp {
@@ -60,11 +71,12 @@ def load_custom_css():
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     
-    /* Main content area - compact design */
+    /* Main content area - compact design with minimal top padding */
     .main .block-container {
-        padding: calc(var(--spacing-unit) * 1) calc(var(--spacing-unit) * 1.5);
+        padding: calc(var(--spacing-unit) * 0.5) calc(var(--spacing-unit) * 1.5);
         max-width: 800px;
         margin: 0 auto;
+        padding-top: calc(var(--spacing-unit) * 0.5) !important;
     }
     
     /* Header styling - compact */
@@ -278,13 +290,13 @@ def load_custom_css():
         transform: translateX(calc(var(--spacing-unit) * 1));
     }
     
-    /* Result styling - compact */
+    /* Result styling - reduced height */
     .result-container {
         background: var(--background-card);
         border: 1px solid var(--border-color);
         border-radius: var(--border-radius-sm);
-        padding: calc(var(--spacing-unit) * 2);
-        margin-top: calc(var(--spacing-unit) * 1.5);
+        padding: calc(var(--spacing-unit) * 1);
+        margin-top: calc(var(--spacing-unit) * 1);
         box-shadow: var(--shadow-sm);
     }
     
@@ -449,17 +461,15 @@ def process_query(workflow: MultiAgentRAGWorkflow, query: str):
             'response_time': response_time
         })
         
-        # Display success result
+        # Display success result with text but no panel
         st.markdown("""
-        <div class="result-container result-success">
-            <h3 style="color: var(--success-color); margin-bottom: calc(var(--spacing-unit) * 2); font-size: 1.25rem; font-weight: 600;">
-                ✅ Query Result
-            </h3>
-        </div>
+        <h3 style="color: var(--success-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600; margin-top: calc(var(--spacing-unit) * 2);">
+            ✅ Query Result
+        </h3>
         """, unsafe_allow_html=True)
         
         st.markdown(f"""
-        <div style="background: var(--background-card); padding: calc(var(--spacing-unit) * 2); border-radius: var(--border-radius-sm); border: 1px solid var(--border-color); margin-bottom: calc(var(--spacing-unit) * 2);">
+        <div style="background: var(--background-card); padding: calc(var(--spacing-unit) * 1.5); border-radius: var(--border-radius-sm); border: 1px solid var(--border-color); border-left: 4px solid var(--success-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 0.95rem; line-height: 1.4;">
             {result}
         </div>
         """, unsafe_allow_html=True)
@@ -469,10 +479,10 @@ def process_query(workflow: MultiAgentRAGWorkflow, query: str):
     except SecurityViolationError as e:
         st.markdown(f"""
         <div class="result-container result-error">
-            <h3 style="color: var(--error-color); margin-bottom: calc(var(--spacing-unit) * 2); font-size: 1.25rem; font-weight: 600;">
+            <h3 style="color: var(--error-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600;">
                 🔒 Security Violation
             </h3>
-            <p style="color: var(--text-primary); margin: 0;">
+            <p style="color: var(--text-primary); margin: 0; font-size: 0.95rem; line-height: 1.4;">
                 {str(e)}
             </p>
         </div>
@@ -482,10 +492,10 @@ def process_query(workflow: MultiAgentRAGWorkflow, query: str):
     except Exception as e:
         st.markdown(f"""
         <div class="result-container result-error">
-            <h3 style="color: var(--error-color); margin-bottom: calc(var(--spacing-unit) * 2); font-size: 1.25rem; font-weight: 600;">
+            <h3 style="color: var(--error-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600;">
                 ❌ Processing Error
             </h3>
-            <p style="color: var(--text-primary); margin: 0;">
+            <p style="color: var(--text-primary); margin: 0; font-size: 0.95rem; line-height: 1.4;">
                 {str(e)}
             </p>
         </div>
@@ -581,10 +591,10 @@ def main():
         # Error state
         st.markdown("""
         <div class="custom-card">
-            <h3 style="color: var(--error-color); margin-bottom: calc(var(--spacing-unit) * 2);">
+            <h3 style="color: var(--error-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600;">
                 ⚠️ System Unavailable
             </h3>
-            <p style="color: var(--text-secondary); margin: 0;">
+            <p style="color: var(--text-secondary); margin: 0; font-size: 0.95rem; line-height: 1.4;">
                 The Multi-Agent RAG Workflow could not be initialized. Please check the system configuration and try again.
             </p>
         </div>

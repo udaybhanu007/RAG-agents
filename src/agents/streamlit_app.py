@@ -60,25 +60,25 @@ def load_custom_css():
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     
-    /* Main content area */
+    /* Main content area - compact design */
     .main .block-container {
-        padding: calc(var(--spacing-unit) * 4) calc(var(--spacing-unit) * 2);
-        max-width: 1200px;
+        padding: calc(var(--spacing-unit) * 1) calc(var(--spacing-unit) * 1.5);
+        max-width: 800px;
         margin: 0 auto;
     }
     
-    /* Header styling */
+    /* Header styling - compact */
     .app-header {
         background: var(--background-card);
-        padding: calc(var(--spacing-unit) * 3);
-        border-radius: var(--border-radius);
-        box-shadow: var(--shadow-md);
-        margin-bottom: calc(var(--spacing-unit) * 3);
+        padding: calc(var(--spacing-unit) * 1.5);
+        border-radius: var(--border-radius-sm);
+        box-shadow: var(--shadow-sm);
+        margin-bottom: calc(var(--spacing-unit) * 1.5);
         border: 1px solid var(--border-color);
     }
     
     .app-title {
-        font-size: 2.5rem;
+        font-size: 1.6rem;
         font-weight: 700;
         color: var(--text-primary);
         margin: 0;
@@ -86,40 +86,41 @@ def load_custom_css():
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
+        line-height: 1.2;
     }
     
     .app-subtitle {
-        font-size: 1.125rem;
+        font-size: 0.9rem;
         color: var(--text-secondary);
-        margin: calc(var(--spacing-unit) * 1) 0 0 0;
+        margin: calc(var(--spacing-unit) * 0.5) 0 0 0;
         font-weight: 500;
     }
     
-    /* Card styling */
+    /* Card styling - compact */
     .custom-card {
         background: var(--background-card);
-        padding: calc(var(--spacing-unit) * 3);
-        border-radius: var(--border-radius);
-        box-shadow: var(--shadow-md);
+        padding: calc(var(--spacing-unit) * 1.5);
+        border-radius: var(--border-radius-sm);
+        box-shadow: var(--shadow-sm);
         border: 1px solid var(--border-color);
-        margin-bottom: calc(var(--spacing-unit) * 2);
+        margin-bottom: calc(var(--spacing-unit) * 1);
         transition: all 0.2s ease-in-out;
     }
     
     .custom-card:hover {
-        box-shadow: var(--shadow-lg);
+        box-shadow: var(--shadow-md);
         transform: translateY(-1px);
     }
     
-    /* Status indicator */
+    /* Status indicator - compact */
     .status-indicator {
         display: inline-flex;
         align-items: center;
-        padding: calc(var(--spacing-unit) * 1) calc(var(--spacing-unit) * 2);
+        padding: calc(var(--spacing-unit) * 0.75) calc(var(--spacing-unit) * 1.5);
         border-radius: 999px;
-        font-size: 0.875rem;
+        font-size: 0.8rem;
         font-weight: 600;
-        margin-bottom: calc(var(--spacing-unit) * 2);
+        margin-bottom: calc(var(--spacing-unit) * 1);
     }
     
     .status-ready {
@@ -158,19 +159,19 @@ def load_custom_css():
         outline: none !important;
     }
     
-    /* Text Input styling - Make it white and prominent */
+    /* Text Input styling - compact white textbox */
     .stTextInput input {
         background: #ffffff !important;
         border: 2px solid #e2e8f0 !important;
         border-radius: var(--border-radius-sm) !important;
-        padding: calc(var(--spacing-unit) * 2) !important;
+        padding: calc(var(--spacing-unit) * 1.5) !important;
         font-family: 'Inter', sans-serif !important;
-        font-size: 1rem !important;
-        line-height: 1.5 !important;
+        font-size: 0.95rem !important;
+        line-height: 1.4 !important;
         transition: all 0.2s ease-in-out !important;
         color: #1e293b !important;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05) !important;
-        height: 3rem !important; /* Match button height */
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+        height: 2.5rem !important;
         box-sizing: border-box !important;
     }
     
@@ -209,18 +210,18 @@ def load_custom_css():
         padding-top: 2rem !important; /* Account for label space */
     }
     
-    /* Button styling */
+    /* Button styling - compact */
     .stButton button {
         background: var(--primary-color) !important;
         color: white !important;
         border: none !important;
         border-radius: var(--border-radius-sm) !important;
-        padding: calc(var(--spacing-unit) * 1.5) calc(var(--spacing-unit) * 3) !important;
+        padding: calc(var(--spacing-unit) * 1.25) calc(var(--spacing-unit) * 2.5) !important;
         font-weight: 600 !important;
-        font-size: 1rem !important;
+        font-size: 0.95rem !important;
         transition: all 0.2s ease-in-out !important;
         box-shadow: var(--shadow-sm) !important;
-        height: 3rem !important; /* Match input field height */
+        height: 2.5rem !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
@@ -248,11 +249,11 @@ def load_custom_css():
         border-color: var(--secondary-color) !important;
     }
     
-    /* Example queries styling - compact version */
+    /* Example queries styling - compact */
     .example-queries {
         background: var(--background-card);
         border: 1px solid var(--border-color);
-        border-radius: var(--border-radius);
+        border-radius: var(--border-radius-sm);
         padding: calc(var(--spacing-unit) * 1);
         margin-bottom: calc(var(--spacing-unit) * 1);
     }
@@ -261,12 +262,13 @@ def load_custom_css():
         background: var(--background-light);
         border: 1px solid var(--border-color);
         border-radius: var(--border-radius-sm);
-        padding: calc(var(--spacing-unit) * 1);
-        margin: calc(var(--spacing-unit) * 0.5) 0;
+        padding: calc(var(--spacing-unit) * 0.75);
+        margin: calc(var(--spacing-unit) * 0.25) 0;
         cursor: pointer;
         transition: all 0.2s ease-in-out;
-        font-size: 0.8rem;
+        font-size: 0.85rem;
         color: var(--text-primary);
+        line-height: 1.3;
     }
     
     .example-item:hover {
@@ -276,14 +278,14 @@ def load_custom_css():
         transform: translateX(calc(var(--spacing-unit) * 1));
     }
     
-    /* Result styling */
+    /* Result styling - compact */
     .result-container {
         background: var(--background-card);
         border: 1px solid var(--border-color);
-        border-radius: var(--border-radius);
-        padding: calc(var(--spacing-unit) * 3);
-        margin-top: calc(var(--spacing-unit) * 2);
-        box-shadow: var(--shadow-md);
+        border-radius: var(--border-radius-sm);
+        padding: calc(var(--spacing-unit) * 2);
+        margin-top: calc(var(--spacing-unit) * 1.5);
+        box-shadow: var(--shadow-sm);
     }
     
     .result-success {
@@ -400,9 +402,9 @@ def display_status_indicator(ready: bool, error: Optional[str] = None):
     pass  # Do nothing - no status messages displayed
 
 def display_example_queries():
-    """Display example queries without panel styling"""
+    """Display example queries in compact format"""
     st.markdown("""
-    <h3 style="color: var(--text-primary); margin-bottom: calc(var(--spacing-unit) * 2); font-size: 1rem; font-weight: 600; margin-top: calc(var(--spacing-unit) * 3);">
+    <h3 style="color: var(--text-primary); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600; margin-top: calc(var(--spacing-unit) * 2);">
         💡 Example Queries
     </h3>
     """, unsafe_allow_html=True)
@@ -530,7 +532,7 @@ def main():
     
     # Main interface
     if workflow_ready and workflow:
-        # Query input section - improved alignment
+        # Query input section - compact alignment
         st.markdown("### 💬 Ask Your Question")
         
         # Create container for better alignment
@@ -550,8 +552,8 @@ def main():
                 )
             
             with col2:
-                # Add some spacing to align with input field
-                st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
+                # Compact spacing for alignment
+                st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
                 search_clicked = st.button(
                     "🔍 Search",
                     type="primary",
@@ -560,8 +562,8 @@ def main():
                 )
             
             with col3:
-                # Add same spacing for alignment
-                st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
+                # Same compact spacing for alignment
+                st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
                 if st.button("🗑️ Clear", use_container_width=True):
                     st.session_state.last_query = ""
                     st.rerun()

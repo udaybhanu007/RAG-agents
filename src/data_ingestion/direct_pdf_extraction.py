@@ -210,7 +210,7 @@ def ingest_pdf_to_neo4j():
         password = get_secret_from_keyvault("NEO4J_PASSWORD")
         
         # Initialize Neo4j connection
-        driver = GraphDatabase.driver(uri, auth=(username, password))
+        driver = GraphDatabase.driver(uri, auth=(username, password)) # type: ignore
         
         # PDF files to process
         pdf_files = [

@@ -147,7 +147,9 @@ class StructuredDocumentIngestor:
             response = self._llm.invoke(messages)
             
             # Parse LLM response to extract schema
-            return self._parse_llm_schema_response(response.content, df)
+            # Ensure response content is a string
+            response_content = response.content if isinstance(response.content, str) else str(response.content)
+            return self._parse_llm_schema_response(response_content, df)
             
         except Exception as e:
             logger.error(f"LLM schema extraction failed: {e}")
@@ -604,7 +606,7 @@ Please provide the schema in the specified JSON format."""
             logger.error(f"Failed to extract schema for {file_path}: {e}")
             return None
 
-    def validate_csv_schema(self, file_path: str, expected_node_types: List[str] = None) -> Dict[str, Any]:
+    def validate_csv_schema(self, file_path: str, expected_node_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Validate that the extracted schema meets certain criteria
         """

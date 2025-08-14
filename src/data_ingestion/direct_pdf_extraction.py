@@ -44,7 +44,18 @@ def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
         # Extract text from each page
         for page_num in range(len(doc)):
             page = doc[page_num]
-            page_text = page.get_text()
+            try:
+                # Try different PyMuPDF API methods
+                if hasattr(page, 'get_text'):
+                    page_text = page.get_text()  # type: ignore
+                elif hasattr(page, 'getText'):
+                    page_text = page.getText()  # type: ignore
+                else:
+                    # Fallback to string conversion
+                    page_text = str(page)
+            except Exception as e:
+                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
+                page_text = ""
             
             page_data = {
                 'page_number': page_num + 1,
@@ -55,15 +66,18 @@ def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
             extracted['pages'].append(page_data)
             full_text += f"\n\n--- Page {page_num + 1} ---\n\n{page_text}"
             
-            # Try to extract tables
+            # Try to extract tables (if supported)
             try:
-                tables = page.find_tables()
-                if tables:
-                    for table_idx, table in enumerate(tables.tables):
-                        table_data = table.extract()
-                        if table_data:
-                            extracted['tables'].append({
-                                'page': page_num + 1,
+                # Check if find_tables method exists (newer PyMuPDF versions)
+                if hasattr(page, 'find_tables'):
+                    tables = page.find_tables()  # type: ignore
+                    if tables and hasattr(tables, 'tables'):
+                        for table_idx, table in enumerate(tables.tables):
+                            if hasattr(table, 'extract'):
+                                table_data = table.extract()
+                                if table_data:
+                                    extracted['tables'].append({
+                                        'page': page_num + 1,
                                 'table_index': table_idx,
                                 'data': table_data,
                                 'rows': len(table_data),
@@ -76,15 +90,15 @@ def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
         extracted['word_count'] = len(full_text.split())
         
         # Extract document metadata
-        metadata = doc.metadata
+        metadata = doc.metadata or {}  # Handle None metadata
         extracted['metadata'] = {
-            'title': metadata.get('title', ''),
-            'author': metadata.get('author', ''),
-            'subject': metadata.get('subject', ''),
-            'creator': metadata.get('creator', ''),
-            'producer': metadata.get('producer', ''),
-            'creation_date': metadata.get('creationDate', ''),
-            'modification_date': metadata.get('modDate', '')
+            'title': metadata.get('title', '') if metadata else '',
+            'author': metadata.get('author', '') if metadata else '',
+            'subject': metadata.get('subject', '') if metadata else '',
+            'creator': metadata.get('creator', '') if metadata else '',
+            'producer': metadata.get('producer', '') if metadata else '',
+            'creation_date': metadata.get('creationDate', '') if metadata else '',
+            'modification_date': metadata.get('modDate', '') if metadata else ''
         }
         
         doc.close()
@@ -209,8 +223,16 @@ def ingest_pdf_to_neo4j():
         username = get_secret_from_keyvault("NEO4J_USERNAME") 
         password = get_secret_from_keyvault("NEO4J_PASSWORD")
         
+        # Validate credentials
+        if not all([uri, username, password]):
+            logger.error("❌ Missing Neo4j credentials")
+            return
+        
+        # Type assertion for mypy
+        assert uri is not None and username is not None and password is not None
+        
         # Initialize Neo4j connection
-        driver = GraphDatabase.driver(uri, auth=(username, password)) # type: ignore
+        driver = GraphDatabase.driver(uri, auth=(username, password))
         
         # PDF files to process
         pdf_files = [
@@ -334,7 +356,8 @@ def ingest_pdf_to_neo4j():
                 RETURN count(doc) as created_count
             """, documents=all_documents)
             
-            docs_created = result.single()['created_count']
+            record = result.single()
+            docs_created = record['created_count'] if record else 0
             print(f"   ✅ Created {docs_created} PDFDocument nodes")
             
             # Step 2: Create Entity nodes
@@ -384,7 +407,8 @@ def ingest_pdf_to_neo4j():
                     RETURN count(ent) as created_count
                 """, entities=entity_nodes)
                 
-                entities_created = result.single()['created_count']
+                record = result.single()
+                entities_created = record['created_count'] if record else 0
                 print(f"   ✅ Created {entities_created} PDFEntity nodes")
             else:
                 entities_created = 0
@@ -440,7 +464,8 @@ def ingest_pdf_to_neo4j():
                     RETURN count(concept) as created_count
                 """, concepts=concept_nodes)
                 
-                concepts_created = result.single()['created_count']
+                record = result.single()
+                concepts_created = record['created_count'] if record else 0
                 print(f"   ✅ Created {concepts_created} PDFConcept nodes")
             else:
                 concepts_created = 0
@@ -481,7 +506,8 @@ def ingest_pdf_to_neo4j():
                         RETURN count(*) as created_count
                     """, relationships=contains_rels)
                     
-                    contains_count = result.single()['created_count']
+                    record = result.single()
+                    contains_count = record['created_count'] if record else 0
                     relationships_created += contains_count
                     print(f"   ✅ Created {contains_count} CONTAINS relationships")
             
@@ -514,7 +540,8 @@ def ingest_pdf_to_neo4j():
                         RETURN count(*) as created_count
                     """, relationships=describes_rels)
                     
-                    describes_count = result.single()['created_count']
+                    record = result.single()
+                    describes_count = record['created_count'] if record else 0
                     relationships_created += describes_count
                     print(f"   ✅ Created {describes_count} DESCRIBES relationships")
             
@@ -575,7 +602,8 @@ def ingest_pdf_to_neo4j():
                         RETURN count(*) as created_count
                     """, relationships=relates_rels)
                     
-                    relates_count = result.single()['created_count']
+                    record = result.single()
+                    relates_count = record['created_count'] if record else 0
                     relationships_created += relates_count
                     print(f"   ✅ Created {relates_count} RELATES_TO relationships")
         

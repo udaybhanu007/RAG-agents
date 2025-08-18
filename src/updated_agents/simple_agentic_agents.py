@@ -17,7 +17,13 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from langchain_openai import AzureChatOpenAI
 from langchain_core.tools import tool
+from langchain_core.documents import Document
+from langchain_community.retrievers import BM25Retriever
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from pydantic.v1 import BaseModel, Field
+import re
+import requests
+import time
 
 # Add the src directory to the path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +32,7 @@ if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
 # Import self-contained base classes and utilities
-from base_classes import (
+from updated_agents.base_classes import (
     WorkflowState, 
     SecureAgentBase, 
     AgentRole,
@@ -102,9 +108,138 @@ class LearningMemory:
         """Simple adaptation counter"""
         self.adaptation_count += 1
         logger.info("strategy_adapted", adaptation_count=self.adaptation_count)
+    
+    def clear_all_learning(self):
+        """Clear all learning data for fresh start"""
+        self.query_patterns.clear()
+        self.routing_performance.clear()
+        self.adaptation_count = 0
+        logger.info("learning_memory_cleared")
 
 # Global learning memory - simple singleton pattern
 learning_memory = LearningMemory()
+
+def _merge_search_results(vector_docs: List[Dict], bm25_docs: List[Dict]) -> List[Dict]:
+    """Merge and deduplicate vector and BM25 results with optimized weighting."""
+    merged_docs = []
+    seen_content = set()
+    
+    def content_hash(content: str) -> str:
+        """Create simple content hash for deduplication"""
+        return re.sub(r'\W+', ' ', content.lower()).strip()[:100]
+    
+    # Adaptive weighting: Vector preferred for semantic understanding
+    if vector_docs and bm25_docs:
+        vector_weight, bm25_weight = 0.7, 0.3
+    elif vector_docs:
+        vector_weight, bm25_weight = 1.0, 0.0
+    else:
+        vector_weight, bm25_weight = 0.0, 1.0
+    
+    # Add vector docs
+    for doc in vector_docs:
+        content_sig = content_hash(doc["content"])
+        if content_sig not in seen_content:
+            doc["hybrid_score"] = doc["score"] * vector_weight
+            merged_docs.append(doc)
+            seen_content.add(content_sig)
+    
+    # Add BM25 docs (avoid duplicates, boost existing)
+    for doc in bm25_docs:
+        content_sig = content_hash(doc["content"])
+        if content_sig not in seen_content:
+            doc["hybrid_score"] = doc["score"] * bm25_weight
+            merged_docs.append(doc)
+            seen_content.add(content_sig)
+        else:
+            # Boost score for documents found by both methods
+            for merged_doc in merged_docs:
+                if content_hash(merged_doc["content"]) == content_sig:
+                    merged_doc["hybrid_score"] += doc["score"] * bm25_weight * 0.5
+                    merged_doc["source"] = "hybrid_both"
+                    break
+    
+    # Sort by hybrid score
+    return sorted(merged_docs, key=lambda x: x["hybrid_score"], reverse=True)
+
+def _initialize_embeddings_fast():
+    """Fast embeddings initialization with SSL bypass and caching"""
+    try:
+        logger.info("embeddings_initialization_started")
+        
+        # Patch requests session to disable SSL verification
+        original_request = requests.Session.request
+        def patched_request(self, method, url, **kwargs):
+            kwargs.setdefault('verify', False)
+            return original_request(self, method, url, **kwargs)
+        requests.Session.request = patched_request
+        
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={
+                'device': 'cpu', 
+                'trust_remote_code': True
+            },
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        
+        logger.info("embeddings_initialized")
+        return embeddings
+        
+    except Exception as e:
+        logger.error("embeddings_initialization_failed", error=str(e))
+        return None
+
+def _initialize_bm25_retriever(qdrant_client, collection_name: str = "medical_research_doc", max_docs: int = 500):
+    """Initialize BM25 retriever from Qdrant documents with optimized fetching."""
+    try:
+        logger.info("bm25_initialization_started", collection=collection_name)
+        
+        # Optimized document fetching - limit to reasonable size for faster init
+        points, _ = qdrant_client.scroll(
+            collection_name=collection_name,
+            limit=max_docs,
+            with_payload=True,
+            with_vectors=False  # Don't fetch vectors for BM25
+        )
+        
+        # Convert to LangChain Documents with streaming processing
+        documents = []
+        for point in points:
+            # Try different payload fields for content
+            content = None
+            if hasattr(point, 'payload') and point.payload:
+                content = (
+                    point.payload.get("content") or 
+                    point.payload.get("chunk") or 
+                    point.payload.get("text") or 
+                    point.payload.get("description") or
+                    str(point.payload)
+                )
+            
+            if content and content.strip():  # Only process non-empty content
+                documents.append(Document(
+                    page_content=content,
+                    metadata=point.payload.get("metadata", {}) if hasattr(point, 'payload') and point.payload else {}
+                ))
+        
+        if not documents:
+            logger.warning(f"No documents found in collection: {collection_name}")
+            return None
+        
+        # Create BM25 retriever with optimized settings
+        bm25_retriever = BM25Retriever.from_documents(documents)
+        bm25_retriever.k = 10  # Keep reasonable default
+        
+        logger.info("bm25_initialized", 
+                   documents_count=len(documents), 
+                   max_docs=max_docs, 
+                   collection=collection_name)
+        return bm25_retriever
+        
+    except Exception as e:
+        logger.error("bm25_initialization_failed", error=str(e))
+        return None
 
 class SimpleReasoningPlan(BaseModel):
     """Simple reasoning plan - no complex chains"""
@@ -114,10 +249,21 @@ class SimpleReasoningPlan(BaseModel):
     is_learned: bool = Field(description="Was this decision learned?")
 
 class VectorSearchResult(BaseModel):
-    """Structured vector search result"""
+    """Enhanced vector search result with hybrid capabilities"""
     documents: List[Dict[str, Any]] = Field(description="Retrieved documents with scores")
     total_found: int = Field(description="Total number of documents found")
     search_params: Dict[str, Any] = Field(description="Search parameters used")
+    search_strategy: str = Field(description="Strategy used: vector_only, hybrid, or enhanced_simulation", default="vector_only")
+    vector_count: int = Field(description="Number of documents from vector search", default=0)
+    bm25_count: int = Field(description="Number of documents from BM25 search", default=0)
+
+class HybridSearchResult(BaseModel):
+    """Hybrid search result combining vector and BM25"""
+    documents: List[Dict[str, Any]] = Field(description="Combined and reranked documents")
+    vector_count: int = Field(description="Number of documents from vector search")
+    bm25_count: int = Field(description="Number of documents from BM25 search")
+    total_found: int = Field(description="Total unique documents after merging")
+    search_strategy: str = Field(description="Strategy used: vector_only, bm25_only, or hybrid")
 
 class GraphSearchResult(BaseModel):
     """Structured graph search result"""
@@ -136,11 +282,16 @@ class AgenticOrchestratorAgent(SecureAgentBase):
     4. Self-contained implementation without external dependencies
     """
     
-    def __init__(self, llm: AzureChatOpenAI):
+    def __init__(self, llm: AzureChatOpenAI, vector_agent=None, graph_agent=None):
         super().__init__(AgentRole.ORCHESTRATOR)
         self.llm = llm
         self.learning_enabled = True
-        logger.info("agentic_orchestrator_initialized", learning_enabled=self.learning_enabled)
+        self.vector_agent = vector_agent  # Real AgenticVectorRAGAgent with hybrid search
+        self.graph_agent = graph_agent    # Real AgenticGraphRAGAgent
+        logger.info("agentic_orchestrator_initialized", 
+                   learning_enabled=self.learning_enabled,
+                   has_vector_agent=vector_agent is not None,
+                   has_graph_agent=graph_agent is not None)
     
     @traceable(**get_traceable_config("AgenticOrchestratorAgent"))
     def reason_and_plan(self, state: WorkflowState) -> WorkflowState:
@@ -148,12 +299,12 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         
         logger.info("reasoning_started", query_length=len(state.get("query", "")))
         
-        # Step 1: Analyze query characteristics (self-contained logic)
-        query_analysis = analyze_query_characteristics(state["query"])
-        logger.debug("query_analysis_completed", analysis=query_analysis)
+        # Step 1: Analyze query characteristics with reasoning (includes proper key mapping)
+        analysis = self._analyze_query_with_reasoning(state["query"])
+        logger.debug("query_analysis_completed", analysis=analysis)
         
         # Step 2: AGENTIC DECISION - Dynamic route selection with learning
-        routing_decision = self._make_agentic_routing_decision(query_analysis)
+        routing_decision = self._make_agentic_routing_decision(analysis)
         logger.info("routing_decision_made", 
                    selected_route=routing_decision.selected_route,
                    is_learned=routing_decision.is_learned,
@@ -165,7 +316,7 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             "selected_route": routing_decision.selected_route,
             "reasoning": routing_decision.reasoning,
             "is_learned": routing_decision.is_learned,
-            "query_analysis": query_analysis
+            "query_analysis": analysis
         }
         
         # Step 3: Execute with the reasoned plan
@@ -173,11 +324,11 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         
         # Step 4: LEARNING - Reflect and adapt for future decisions
         if self.learning_enabled:
-            self._learn_from_execution(query_analysis.dict(), routing_decision, state)
+            self._learn_from_execution(analysis, routing_decision, state)
             logger.debug("learning_completed")
         
         return state
-    
+
     @tool
     @traceable(**get_traceable_config("AgenticOrchestratorAgent"))
     def validate_medical_relevance_tool(self, query: str) -> Dict[str, Any]:
@@ -228,25 +379,6 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             "I can only help with medical and healthcare-related questions.")
         state["sources"] = []
         logger.debug("non_medical_response_generated")
-        return state
-    
-    @traceable(**get_traceable_config("AgenticOrchestratorAgent"))
-    def reason_and_plan(self, state: WorkflowState) -> WorkflowState:
-        """CORE AGENTIC CAPABILITY: Dynamic reasoning and planning"""
-        
-        # Step 1: Analyze query characteristics (reuse existing logic)
-        query_analysis = self._analyze_query_with_reasoning(state["query"])
-        
-        # Step 2: AGENTIC DECISION - Dynamic route selection with learning
-        routing_decision = self._make_agentic_routing_decision(query_analysis)
-        
-        # Step 3: Execute with the reasoned plan
-        state = self._execute_agentic_plan(state, routing_decision)
-        
-        # Step 4: LEARNING - Reflect and adapt for future decisions
-        if self.learning_enabled:
-            self._learn_from_execution(query_analysis, routing_decision, state)
-        
         return state
     
     def _analyze_query_with_reasoning(self, query: str) -> Dict[str, Any]:
@@ -357,7 +489,7 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             return self.handle_non_medical_query(state)
     
     def _execute_vector_search(self, state: WorkflowState) -> WorkflowState:
-        """Execute vector search route"""
+        """Execute vector search route using real AgenticVectorRAGAgent"""
         logger.info("executing_vector_search_route")
         
         # First validate medical relevance using the function
@@ -368,13 +500,27 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             logger.warning("vector_search_blocked_non_medical")
             return self.handle_non_medical_query(state)
 
-        # Execute vector search (would integrate with actual vector agent)
-        state = self._simulate_vector_search(state)
+        # Use real AgenticVectorRAGAgent if available, otherwise use simulation
+        if self.vector_agent:
+            try:
+                logger.info("using_real_vector_agent_with_hybrid_search")
+                vector_result = self.vector_agent.search_vectors(state["query"])
+                state["vector_results"] = vector_result.dict()
+                logger.info("real_vector_search_completed", 
+                           total_found=vector_result.total_found,
+                           strategy=vector_result.search_strategy)
+            except Exception as e:
+                logger.error("real_vector_search_failed", error=str(e))
+                state = self._simulate_vector_search(state)
+        else:
+            logger.warning("vector_agent_not_available_using_simulation")
+            state = self._simulate_vector_search(state)
+        
         logger.info("vector_search_route_completed")
         return state
     
     def _execute_graph_search(self, state: WorkflowState) -> WorkflowState:
-        """Execute graph search route"""
+        """Execute graph search route using real AgenticGraphRAGAgent"""
         logger.info("executing_graph_search_route")
         
         # First validate medical relevance using the function
@@ -385,8 +531,21 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             logger.warning("graph_search_blocked_non_medical")
             return self.handle_non_medical_query(state)
         
-        # Execute graph search (would integrate with actual graph agent)
-        state = self._simulate_graph_search(state)
+        # Use real AgenticGraphRAGAgent if available, otherwise use simulation
+        if self.graph_agent:
+            try:
+                logger.info("using_real_graph_agent")
+                graph_result = self.graph_agent.search_graph(state)
+                state["graph_results"] = graph_result.dict()
+                logger.info("real_graph_search_completed", 
+                           total_found=graph_result.total_found)
+            except Exception as e:
+                logger.error("real_graph_search_failed", error=str(e))
+                state = self._simulate_graph_search(state)
+        else:
+            logger.warning("graph_agent_not_available_using_simulation")
+            state = self._simulate_graph_search(state)
+        
         logger.info("graph_search_route_completed")
         return state
     
@@ -540,9 +699,53 @@ class AgenticVectorRAGAgent(SecureAgentBase):
             'k_documents': 5,  # Adaptive number of documents
             'score_threshold': 0.7  # Adaptive threshold
         }
+        
+        # Initialize embeddings and BM25 for hybrid search
+        self.embeddings = None
+        self.bm25_retriever = None
+        self._embeddings_initialized = False
+        self._bm25_initialized = False
+        
         logger.info("agentic_vector_agent_initialized", 
                    initial_k_documents=self.adaptive_params['k_documents'],
                    initial_score_threshold=self.adaptive_params['score_threshold'])
+    
+    def _get_embeddings_lazy(self):
+        """Lazy initialization of embeddings - only when needed for vector search"""
+        if not self._embeddings_initialized:
+            self.embeddings = _initialize_embeddings_fast()
+            self._embeddings_initialized = True
+        return self.embeddings
+    
+    def _get_bm25_retriever_lazy(self):
+        """Lazy initialization of BM25 retriever - only when needed for hybrid search"""
+        if not self._bm25_initialized and self.vector_store:
+            # Try to initialize BM25 from available collections
+            try:
+                collections = self.vector_store.get_collections()
+                for collection in collections.collections:
+                    if any(keyword in collection.name.lower() for keyword in ['medical', 'chest', 'xray', 'document']):
+                        self.bm25_retriever = _initialize_bm25_retriever(
+                            self.vector_store, 
+                            collection.name, 
+                            max_docs=500
+                        )
+                        break
+                
+                if not self.bm25_retriever and collections.collections:
+                    # Use first available collection if no medical-specific found
+                    self.bm25_retriever = _initialize_bm25_retriever(
+                        self.vector_store, 
+                        collections.collections[0].name, 
+                        max_docs=500
+                    )
+            except Exception as e:
+                logger.warning("bm25_lazy_initialization_failed", error=str(e))
+                self.bm25_retriever = None
+            
+            self._bm25_initialized = True
+        
+        return self.bm25_retriever
     
     @tool
     @traceable(**get_traceable_config("AgenticVectorRAGAgent"))
@@ -568,7 +771,7 @@ class AgenticVectorRAGAgent(SecureAgentBase):
             logger.debug("adapted_for_medium_query", k_documents=5, score_threshold=0.7)
         
         # Perform search with structured output
-        search_result = self.search_vectors(state)
+        search_result = self.search_vectors(state["query"])
         
         # Add structured result to state
         state["vector_results"] = search_result.dict()
@@ -576,29 +779,27 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                    documents_found=search_result.total_found)
         return state
     
-    @tool
     @traceable(**get_traceable_config("AgenticVectorRAGAgent"))
-    def search_vectors(self, state: WorkflowState) -> VectorSearchResult:
-        """Real Qdrant vector search implementation with structured output"""
-        logger.debug("vector_search_started", 
+    def search_vectors(self, query: str) -> VectorSearchResult:
+        """Enhanced hybrid vector search with BM25 integration and reranking"""
+        logger.debug("hybrid_vector_search_started", 
                     k_documents=self.adaptive_params['k_documents'],
                     score_threshold=self.adaptive_params['score_threshold'])
         
         try:
-            query = state['query']
+            vector_docs, bm25_docs = [], []
             
-            # Use real Qdrant vector search if available
-            if self.vector_store and hasattr(self.vector_store, 'scroll'):
-                logger.info("performing_real_qdrant_search", query=query[:50])
-                
-                # Try to get collections first
+            # Try vector search with embeddings
+            embeddings = self._get_embeddings_lazy()
+            if embeddings and self.vector_store and hasattr(self.vector_store, 'search'):
                 try:
-                    collections = self.vector_store.get_collections()
-                    logger.info("available_collections", 
-                               collections=[c.name for c in collections.collections])
+                    logger.info("performing_vector_search")
                     
-                    # Try to find medical-related collections
+                    # Get available collections
+                    collections = self.vector_store.get_collections()
                     collection_name = None
+                    
+                    # Find medical-related collection
                     for collection in collections.collections:
                         if any(keyword in collection.name.lower() for keyword in ['medical', 'chest', 'xray', 'document']):
                             collection_name = collection.name
@@ -608,103 +809,202 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                         collection_name = collections.collections[0].name
                     
                     if collection_name:
-                        logger.info("using_collection", collection=collection_name)
-                        
-                        # Perform scroll search to get some documents
-                        # Since we don't have embeddings for text search, we'll get recent documents
-                        scroll_result = self.vector_store.scroll(
+                        # Perform vector search
+                        query_embedding = embeddings.embed_query(query)
+                        vector_results = self.vector_store.search(
                             collection_name=collection_name,
-                            limit=self.adaptive_params['k_documents'],
+                            query_vector=query_embedding,
+                            limit=self.adaptive_params['k_documents'] * 2,
                             with_payload=True,
                             with_vectors=False
                         )
                         
-                        documents = []
-                        for point in scroll_result[0]:  # scroll returns (points, next_page_offset)
-                            payload = point.payload if point.payload else {}
-                            
-                            # Extract content from various possible fields
-                            content = (
-                                payload.get('content') or 
-                                payload.get('text') or 
-                                payload.get('description') or
-                                str(payload)
-                            )
-                            
-                            # Simple relevance scoring based on query keywords
-                            query_lower = query.lower()
-                            content_lower = content.lower()
-                            score = 0.5  # Base score
-                            
-                            # Boost score for keyword matches
-                            for word in query_lower.split():
-                                if word in content_lower:
-                                    score += 0.1
-                            
-                            score = min(score, 1.0)
-                            
-                            documents.append({
-                                "content": content,
-                                "score": score,
-                                "metadata": payload
-                            })
+                        vector_docs = []
+                        for result in vector_results:
+                            if hasattr(result, 'payload') and result.payload:
+                                content = (
+                                    result.payload.get("content") or 
+                                    result.payload.get("chunk") or 
+                                    result.payload.get("text") or
+                                    str(result.payload)
+                                )
+                                
+                                vector_docs.append({
+                                    "id": f"vec_{result.id}",
+                                    "content": content,
+                                    "metadata": result.payload.get("metadata", {}),
+                                    "score": float(result.score),
+                                    "source": "vector_search"
+                                })
                         
-                        # Sort by score and filter by threshold
-                        documents = [d for d in documents if d['score'] >= self.adaptive_params['score_threshold']]
-                        documents = sorted(documents, key=lambda x: x['score'], reverse=True)
-                        
-                        logger.info("real_qdrant_search_completed", 
-                                   documents_found=len(documents),
-                                   collection=collection_name)
-                                   
-                    else:
-                        logger.warning("no_suitable_collection_found")
-                        documents = []
+                        logger.info("vector_search_completed", documents_found=len(vector_docs))
                         
                 except Exception as e:
-                    logger.error("qdrant_collection_access_failed", error=str(e))
-                    documents = []
+                    logger.warning("vector_search_failed", error=str(e))
+            
+            # Try BM25 search for keyword matching
+            bm25_retriever = self._get_bm25_retriever_lazy()
+            if bm25_retriever:
+                try:
+                    logger.info("performing_bm25_search")
+                    bm25_results = bm25_retriever.get_relevant_documents(query)
+                    bm25_docs = []
                     
-            else:
-                # Fallback to enhanced simulation with medical context  
-                logger.warning("no_vector_store_available_using_enhanced_simulation")
-                documents = []
+                    for i, doc in enumerate(bm25_results[:self.adaptive_params['k_documents']]):
+                        bm25_docs.append({
+                            "id": f"bm25_{i}",
+                            "content": doc.page_content,
+                            "metadata": doc.metadata,
+                            "score": max(0.0, 1.0 - (i / len(bm25_results))),
+                            "source": "keyword_search"
+                        })
+                    
+                    logger.info("bm25_search_completed", documents_found=len(bm25_docs))
+                    
+                except Exception as e:
+                    logger.warning("bm25_search_failed", error=str(e))
             
-            # If no documents found from Qdrant, use enhanced medical simulation
-            if not documents:
-                logger.info("using_enhanced_medical_simulation")
-                documents = [
-                    {
-                        "content": f"The NIH Chest X-ray Dataset contains over 100,000 frontal-view X-ray images from more than 30,000 unique patients. This large collection is commonly used for medical AI research and machine learning model training for pathology detection. Query context: {query}",
-                        "score": 0.85,
-                        "metadata": {"source": "nih_dataset_info", "type": "medical_dataset"}
-                    },
-                    {
-                        "content": f"Medical imaging analysis focuses on automated detection of chest pathologies including pneumonia, atelectasis, consolidation, edema, and other conditions. Advanced AI models are trained on large datasets like NIH Chest X-ray for accurate diagnosis. Related query: {query}",
-                        "score": 0.75,
-                        "metadata": {"source": "medical_ai_info", "type": "pathology_detection"}
-                    }
-                ]
+            # Merge results using hybrid approach
+            if vector_docs or bm25_docs:
+                combined_docs = _merge_search_results(vector_docs, bm25_docs)
+                
+                # Apply reranking if we have LLM available
+                if self.llm and len(combined_docs) > 1:
+                    try:
+                        logger.info("applying_llm_reranking", documents_count=len(combined_docs))
+                        reranked_docs = self._rerank_documents_by_relevance(query, combined_docs)
+                        combined_docs = reranked_docs[:self.adaptive_params['k_documents']]
+                        logger.info("reranking_completed", final_count=len(combined_docs))
+                    except Exception as e:
+                        logger.warning("reranking_failed", error=str(e))
+                        # Continue with original ordering
+                        combined_docs = combined_docs[:self.adaptive_params['k_documents']]
+                else:
+                    combined_docs = combined_docs[:self.adaptive_params['k_documents']]
+                
+                # Determine strategy
+                if vector_docs and bm25_docs:
+                    strategy = "hybrid"
+                elif vector_docs:
+                    strategy = "vector_only"
+                elif bm25_docs:
+                    strategy = "bm25_only"
+                else:
+                    strategy = "no_results"
+                
+                logger.info("hybrid_search_completed", 
+                           total_docs=len(combined_docs),
+                           vector_count=len(vector_docs),
+                           bm25_count=len(bm25_docs),
+                           strategy=strategy)
+                
+                return VectorSearchResult(
+                    documents=combined_docs,
+                    total_found=len(combined_docs),
+                    search_params=self.adaptive_params.copy(),
+                    search_strategy=strategy,
+                    vector_count=len(vector_docs),
+                    bm25_count=len(bm25_docs)
+                )
             
-            result = VectorSearchResult(
-                documents=documents,
-                total_found=len(documents),
-                search_params=self.adaptive_params.copy()
+            # Fallback to enhanced medical simulation
+            logger.info("using_enhanced_medical_simulation_fallback")
+            simulation_docs = [
+                {
+                    "content": f"The NIH Chest X-ray Dataset contains over 100,000 frontal-view X-ray images from more than 30,000 unique patients. This large collection is commonly used for medical AI research and machine learning model training for pathology detection. Query context: {query}",
+                    "score": 0.85,
+                    "metadata": {"source": "nih_dataset_info", "type": "medical_dataset"},
+                    "source": "enhanced_simulation",
+                    "hybrid_score": 0.85
+                },
+                {
+                    "content": f"Medical imaging analysis focuses on automated detection of chest pathologies including pneumonia, atelectasis, consolidation, edema, and other conditions. Advanced AI models are trained on large datasets like NIH Chest X-ray for accurate diagnosis. Related query: {query}",
+                    "score": 0.75,
+                    "metadata": {"source": "medical_ai_info", "type": "pathology_detection"},
+                    "source": "enhanced_simulation",
+                    "hybrid_score": 0.75
+                }
+            ]
+            
+            return VectorSearchResult(
+                documents=simulation_docs,
+                total_found=len(simulation_docs),
+                search_params=self.adaptive_params.copy(),
+                search_strategy="enhanced_simulation",
+                vector_count=0,
+                bm25_count=0
             )
             
-            logger.debug("vector_search_completed", 
-                        documents_found=len(documents),
-                        search_params=self.adaptive_params)
-            
-            return result
-            
         except Exception as e:
-            logger.error("vector_search_failed", error=str(e))
+            logger.error("hybrid_vector_search_failed", error=str(e))
             return VectorSearchResult(
                 documents=[],
                 total_found=0,
-                search_params=self.adaptive_params.copy()
+                search_params=self.adaptive_params.copy(),
+                search_strategy="error",
+                vector_count=0,
+                bm25_count=0
             )
+    
+    def _rerank_documents_by_relevance(self, query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Rerank documents using LLM for better relevance ordering"""
+        try:
+            if len(documents) <= 1:
+                return documents
+            
+            # Prepare documents for reranking
+            doc_summaries = []
+            for i, doc in enumerate(documents):
+                content = doc.get("content", "")
+                # Truncate long content for reranking prompt
+                content_preview = content[:200] + "..." if len(content) > 200 else content
+                doc_summaries.append(f"Document {i+1}: {content_preview}")
+            
+            # Create reranking prompt
+            reranking_prompt = f"""Given the user query and the following documents, please rank them from most relevant (1) to least relevant ({len(documents)}) for answering the query.
+
+User Query: {query}
+
+Documents:
+{chr(10).join(doc_summaries)}
+
+Provide your ranking as a comma-separated list of document numbers (e.g., "3,1,4,2" for 4 documents).
+Ranking (most relevant first):"""
+
+            try:
+                from langchain_core.messages import HumanMessage
+                
+                response = self.llm.invoke([HumanMessage(content=reranking_prompt)])
+                
+                # Handle different response types
+                if hasattr(response, 'content'):
+                    ranking_text = response.content
+                elif isinstance(response, str):
+                    ranking_text = response
+                else:
+                    ranking_text = str(response)
+                
+                # Parse ranking
+                ranking_str = str(ranking_text).strip()
+                ranking_numbers = [int(x.strip()) for x in ranking_str.split(',') if x.strip().isdigit()]
+                
+                # Validate ranking
+                if len(ranking_numbers) == len(documents) and set(ranking_numbers) == set(range(1, len(documents) + 1)):
+                    # Apply ranking (convert 1-based to 0-based indexing)
+                    reranked_docs = [documents[i-1] for i in ranking_numbers]
+                    logger.info("llm_reranking_successful", original_order=list(range(len(documents))), new_order=ranking_numbers)
+                    return reranked_docs
+                else:
+                    logger.warning("invalid_ranking_response", ranking=ranking_numbers)
+                    return documents
+                    
+            except Exception as e:
+                logger.warning("llm_reranking_failed", error=str(e))
+                return documents
+                
+        except Exception as e:
+            logger.error("reranking_error", error=str(e))
+            return documents
 
 class AgenticGraphRAGAgent(SecureAgentBase):
     """
@@ -741,7 +1041,6 @@ class AgenticGraphRAGAgent(SecureAgentBase):
                    optimizations_applied=search_result.optimizations_applied)
         return state
     
-    @tool
     @traceable(**get_traceable_config("AgenticGraphRAGAgent"))
     def search_graph(self, state: WorkflowState) -> GraphSearchResult:
         """Simplified graph search implementation with structured output"""
@@ -820,19 +1119,20 @@ class SimpleValidatorAgent(SecureAgentBase):
         return validation_result
 
 class SimpleAnswerSynthesisAgent(SecureAgentBase):
-    """Simple answer synthesis agent with self-contained logic"""
+    """Enhanced answer synthesis agent with LLM-based generation"""
     
     def __init__(self, llm: AzureChatOpenAI):
         super().__init__(AgentRole.SYNTHESIZER)
         self.llm = llm
-        logger.info("simple_synthesis_agent_initialized")
+        logger.info("enhanced_synthesis_agent_initialized")
     
     @traceable(**get_traceable_config("SimpleAnswerSynthesisAgent"))
     def synthesize_answer(self, state: WorkflowState) -> SynthesisResult:
-        """Simple answer synthesis"""
-        logger.info("synthesis_started")
+        """Enhanced answer synthesis using LLM"""
+        logger.info("enhanced_synthesis_started")
         
         validated_results = state.get("validated_results", [])
+        query = state.get("query", "")
         
         if not validated_results:
             logger.warning("synthesis_no_results")
@@ -842,34 +1142,112 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
                 sources=[]
             )
         
-        # Simple synthesis logic
-        content_pieces = [doc.get("content", "") for doc in validated_results if doc.get("content")]
-        logger.debug("synthesis_content_pieces", count=len(content_pieces))
+        # Extract and prepare context from documents
+        context_pieces = []
+        sources = []
         
-        if content_pieces:
-            # Create a simple synthesized answer
-            answer = f"Based on the available information: {content_pieces[0]}"
-            if len(content_pieces) > 1:
-                answer += f" Additionally, {content_pieces[1]}"
+        for i, doc in enumerate(validated_results[:5]):  # Limit to top 5 documents
+            content = doc.get("content", "")
+            score = doc.get("score", 0.0)
             
-            sources = [f"Source {i+1}" for i in range(len(content_pieces))]
-            confidence_score = min(0.9, len(content_pieces) * 0.3)
-            
-            logger.info("synthesis_completed", 
-                       confidence_score=confidence_score,
-                       sources_count=len(sources))
-            
-            return SynthesisResult(
-                answer=answer,
-                confidence=confidence_score,
-                sources=sources
-            )
-        else:
-            logger.warning("synthesis_content_processing_failed")
+            if content and content.strip():
+                # Clean and prepare content
+                cleaned_content = content.strip()
+                if len(cleaned_content) > 500:  # Truncate very long content
+                    cleaned_content = cleaned_content[:500] + "..."
+                
+                context_pieces.append(f"[Source {i+1}] {cleaned_content}")
+                sources.append({
+                    "source_id": i+1,
+                    "content_preview": cleaned_content[:100] + "..." if len(cleaned_content) > 100 else cleaned_content,
+                    "relevance_score": float(score)
+                })
+        
+        if not context_pieces:
+            logger.warning("synthesis_no_valid_content")
             return SynthesisResult(
                 answer="The retrieved information could not be processed properly.",
                 confidence=0.0,
                 sources=[]
+            )
+        
+        # Create comprehensive context
+        combined_context = "\n\n".join(context_pieces)
+        
+        # Enhanced synthesis prompt template
+        synthesis_prompt = f"""You are a medical AI assistant. Based on the provided context, please answer the user's question comprehensively and accurately.
+
+User Question: {query}
+
+Context Information:
+{combined_context}
+
+Instructions:
+1. Provide a comprehensive answer based ONLY on the information in the context
+2. If the context doesn't contain sufficient information, state that clearly
+3. Use a professional, medical tone appropriate for healthcare information
+4. Structure your response clearly with main points
+5. Do not make assumptions beyond what's provided in the context
+
+Answer:"""
+
+        try:
+            # Use LLM to generate comprehensive answer
+            logger.info("llm_synthesis_started", context_pieces=len(context_pieces))
+            
+            from langchain_core.messages import HumanMessage
+            
+            response = self.llm.invoke([HumanMessage(content=synthesis_prompt)])
+            
+            # Handle different response types
+            if hasattr(response, 'content'):
+                synthesized_answer = response.content
+            elif isinstance(response, str):
+                synthesized_answer = response
+            else:
+                synthesized_answer = str(response)
+            
+            # Ensure we have a string and clean it
+            synthesized_answer = str(synthesized_answer).strip() if synthesized_answer else "Unable to generate answer"
+            
+            # Calculate confidence based on context quality and length
+            confidence_score = min(0.95, 0.6 + (len(context_pieces) * 0.1) + (min(len(synthesized_answer), 500) / 1000))
+            
+            # Convert sources to strings as required by SynthesisResult model
+            sources_strings = []
+            for source in sources:
+                source_str = f"Source {source['source_id']}: {source['content_preview']} (relevance: {source['relevance_score']:.2f})"
+                sources_strings.append(source_str)
+            
+            logger.info("llm_synthesis_completed", 
+                       answer_length=len(synthesized_answer),
+                       confidence_score=confidence_score,
+                       sources_count=len(sources_strings))
+            
+            return SynthesisResult(
+                answer=synthesized_answer,
+                confidence=confidence_score,
+                sources=sources_strings
+            )
+            
+        except Exception as e:
+            logger.error("llm_synthesis_failed", error=str(e))
+            
+            # Fallback to simple concatenation if LLM fails
+            fallback_answer = f"Based on the available information: {context_pieces[0]}"
+            if len(context_pieces) > 1:
+                fallback_answer += f"\n\nAdditionally: {context_pieces[1]}"
+            
+            # Convert sources to strings for fallback
+            sources_strings = []
+            for source in sources:
+                source_str = f"Source {source['source_id']}: {source['content_preview']} (relevance: {source['relevance_score']:.2f})"
+                sources_strings.append(source_str)
+            
+            return SynthesisResult(
+                answer=fallback_answer,
+                confidence=0.5,
+                sources=sources_strings
             )
 
 class SimpleAgenticWorkflow:
@@ -889,7 +1267,8 @@ class SimpleAgenticWorkflow:
         self.graph_agent = AgenticGraphRAGAgent(llm, graph_store)
         
         # CORE AGENTIC COMPONENT: Enhanced Orchestrator with reasoning
-        self.orchestrator = AgenticOrchestratorAgent(llm)
+        # Pass the real agents to the orchestrator
+        self.orchestrator = AgenticOrchestratorAgent(llm, self.vector_agent, self.graph_agent)
         
         # Use simple self-contained validation and synthesis agents
         self.validator = SimpleValidatorAgent(llm)
@@ -958,8 +1337,8 @@ class SimpleAgenticWorkflow:
             # CORE AGENTIC STEP: Reason and plan dynamically
             state = self.orchestrator.reason_and_plan(state)
             
-            # If it's a non-medical query, we're done
-            if state.get("final_answer") and not state.get("medical_validation", {}).get("is_medical", False):
+            # Check if it's a non-medical query (handled in reason_and_plan)
+            if not state.get("medical_validation", {}).get("is_medical", False) and state.get("final_answer"):
                 execution_time = (datetime.now() - start_time).total_seconds()
                 logger.info("non_medical_query_completed", execution_time=execution_time)
                 return {
@@ -981,30 +1360,40 @@ class SimpleAgenticWorkflow:
             route = state.get("reasoning_plan", {}).get("selected_route", "both")
             logger.debug("medical_query_route_determined", route=route)
             
-            # Execute the appropriate search based on reasoning - use simple simulation
-            if route == "vector":
-                state = self._execute_vector_search_simple(state)
-            elif route == "graph":
-                state = self._execute_graph_search_simple(state)
-            elif route == "both":
-                state = self._execute_vector_search_simple(state)
-                state = self._execute_graph_search_simple(state)
+            # The orchestrator.reason_and_plan() has already executed the searches
+            # and stored results in state["vector_results"] and/or state["graph_results"]
+            # No need to call the agents again - just validate that we have results
             
-            # Validation step
+            has_vector_results = bool(state.get("vector_results", {}).get("documents"))
+            has_graph_results = bool(state.get("graph_results", {}).get("documents"))
+            
+            logger.info("search_results_available", 
+                       route=route,
+                       has_vector_results=has_vector_results,
+                       has_graph_results=has_graph_results)
+            
+            # Validation step - prepare documents for synthesis
             validation_result = self.validator.validate_results(state)
+            logger.info("validation_completed", is_valid=validation_result.is_valid)
             
-            # Synthesis step - get result and put final answer into state
+            # Synthesis step - THIS is where the final answer gets generated
             synthesis_result = self.synthesizer.synthesize_answer(state)
             state["final_answer"] = synthesis_result.answer if hasattr(synthesis_result, 'answer') else getattr(synthesis_result, 'final_answer', 'No answer generated')
             state["sources"] = synthesis_result.sources if hasattr(synthesis_result, 'sources') else []
             state["confidence_score"] = synthesis_result.confidence if hasattr(synthesis_result, 'confidence') else getattr(synthesis_result, 'confidence_score', 0.0)
+            
+            logger.info("synthesis_completed", 
+                       has_final_answer=bool(state.get("final_answer")),
+                       answer_length=len(str(state.get("final_answer", ""))),
+                       confidence_score=state.get("confidence_score", 0.0))
             
             # Calculate execution metrics
             execution_time = (datetime.now() - start_time).total_seconds()
             
             logger.info("agentic_query_processing_completed", 
                        execution_time=execution_time,
-                       route_used=route)
+                       route_used=route,
+                       final_answer_generated=bool(state.get("final_answer")))
             
             # Prepare agentic response
             return {

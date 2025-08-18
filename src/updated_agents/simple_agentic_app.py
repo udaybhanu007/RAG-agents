@@ -15,11 +15,11 @@ src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
-from enhanced_query_analyzer import EnhancedQueryAnalyzer
-from dynamic_tool_selector import DynamicToolSelector
-from execution_planner import ExecutionPlanner
-from simple_agentic_agents import AgenticOrchestratorAgent, LearningMemory, SimpleAgenticWorkflow
-from base_classes import WorkflowState, QueryResult, AgentResult
+from updated_agents.enhanced_query_analyzer import EnhancedQueryAnalyzer
+from updated_agents.dynamic_tool_selector import DynamicToolSelector
+from updated_agents.execution_planner import ExecutionPlanner
+from updated_agents.simple_agentic_agents import AgenticOrchestratorAgent, LearningMemory, SimpleAgenticWorkflow
+from updated_agents.base_classes import WorkflowState, QueryResult, AgentResult
 from core.logging_config import get_logger
 
 # Initialize logger for the application
@@ -44,12 +44,129 @@ class EnhancedAgenticRAGApplication:
         self.tool_selector = None
         self.execution_planner = None
         self.orchestrator_agent = None
+        self.workflow = None
         self.learning_memory = None
         self.initialized = False
         logger.info("enhanced_agentic_app_created")
     
+    def initialize_system(self):
+        """
+        Initialize the enhanced agentic system with all components
+        This method handles all initialization internally, similar to MultiAgentRAGWorkflow
+        """
+        logger.info("initializing_enhanced_agentic_system_self_contained")
+        try:
+            # Import necessary components
+            from core.azure_keyvault_manager import AzureKeyVaultManager
+            from langchain_openai import AzureChatOpenAI
+            from qdrant_client import QdrantClient
+            from neo4j import GraphDatabase
+            
+            # Initialize Azure Key Vault Manager with proper environment handling
+            try:
+                # Check if Key Vault is enabled
+                from dotenv import load_dotenv
+                import os
+                
+                # Load environment configuration
+                load_dotenv()
+                keyvalue_enabled = os.getenv('Keyvalue_Enabled', 'true').lower() == 'true'
+                
+                if keyvalue_enabled:
+                    # Use Azure Key Vault
+                    keyvault_manager = AzureKeyVaultManager()
+                    logger.debug("azure_keyvault_manager_initialized")
+                else:
+                    # Use environment variables (.env.dev is already loaded by azure_keyvault_manager.py)
+                    class EnvironmentKeyVaultManager:
+                        def get_secret(self, secret_name: str):
+                            # Map secret names to environment variable names
+                            env_map = {
+                                "azure-openai-endpoint": "AZURE_OPENAI_ENDPOINT",
+                                "azure-openai-api-key": "AZURE_OPENAI_API_KEY",
+                                "neo4j-uri": "NEO4J_URI",
+                                "neo4j-username": "NEO4J_USERNAME", 
+                                "neo4j-password": "NEO4J_PASSWORD"
+                            }
+                            env_var = env_map.get(secret_name, secret_name.upper().replace('-', '_'))
+                            return os.getenv(env_var)
+                    
+                    keyvault_manager = EnvironmentKeyVaultManager()
+                    logger.info("using_environment_variables_keyvault_disabled")
+                    
+            except Exception as e:
+                logger.error("keyvault_initialization_failed", error=str(e))
+                raise ValueError(f"Failed to initialize key management: {str(e)}")
+            
+            # Initialize Azure OpenAI LLM with error handling
+            try:
+                azure_endpoint = keyvault_manager.get_secret("azure-openai-endpoint")
+                api_key = keyvault_manager.get_secret("azure-openai-api-key")
+                
+                if not azure_endpoint or not api_key:
+                    raise ValueError("Missing Azure OpenAI credentials")
+                    
+                llm = AzureChatOpenAI(
+                    azure_endpoint=azure_endpoint,
+                    api_key=api_key,
+                    api_version="2024-05-01-preview",
+                    deployment_name="gpt-4o-mini",
+                    temperature=0.1
+                )
+                logger.debug("azure_llm_initialized")
+            except Exception as e:
+                logger.error("azure_llm_initialization_failed", error=str(e))
+                raise ValueError(f"Failed to initialize Azure OpenAI LLM: {str(e)}")
+            
+            # Initialize Qdrant vector store
+            try:
+                vector_client = QdrantClient(host="localhost", port=6333)
+                logger.debug("qdrant_vector_client_initialized")
+            except Exception as e:
+                logger.warning("qdrant_initialization_failed", error=str(e))
+                vector_client = None
+            
+            # Initialize Neo4j graph store
+            try:
+                neo4j_uri = keyvault_manager.get_secret("neo4j-uri") or "bolt://localhost:7687"
+                neo4j_user = keyvault_manager.get_secret("neo4j-username") or "neo4j"
+                neo4j_password = keyvault_manager.get_secret("neo4j-password") or "password"
+                
+                graph_store = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+                logger.debug("neo4j_graph_store_initialized")
+            except Exception as e:
+                logger.warning("neo4j_initialization_failed", error=str(e))
+                graph_store = None
+            
+            # Initialize all enhanced components
+            self.query_analyzer = EnhancedQueryAnalyzer(llm)
+            self.tool_selector = DynamicToolSelector(llm)
+            self.execution_planner = ExecutionPlanner(llm)
+            self.learning_memory = LearningMemory()
+            
+            # Initialize the complete workflow system instead of just orchestrator
+            self.workflow = SimpleAgenticWorkflow(llm, vector_client, graph_store)
+            self.orchestrator_agent = self.workflow.orchestrator
+            
+            self.initialized = True
+            logger.info("enhanced_agentic_system_initialized_successfully")
+            return {
+                "status": "success", 
+                "message": "Enhanced Agentic RAG System initialized successfully",
+                "capabilities": {
+                    "comprehensive_analysis": True,
+                    "dynamic_tool_selection": True,
+                    "adaptive_execution": True,
+                    "learning_enabled": True,
+                    "security_integrated": True
+                }
+            }
+        except Exception as e:
+            logger.error("enhanced_agentic_system_initialization_failed", error=str(e))
+            return {"status": "error", "message": f"Initialization failed: {str(e)}"}
+    
     def initialize(self, llm, vector_store=None, graph_store=None):
-        """Initialize the enhanced agentic system"""
+        """Initialize the enhanced agentic system with provided components (legacy method)"""
         logger.info("initializing_enhanced_agentic_system")
         try:
             # Initialize all enhanced components
@@ -57,14 +174,10 @@ class EnhancedAgenticRAGApplication:
             self.tool_selector = DynamicToolSelector(llm)
             self.execution_planner = ExecutionPlanner(llm)
             self.learning_memory = LearningMemory()
-            self.orchestrator_agent = AgenticOrchestratorAgent(llm=llm)
             
-            # Initialize the workflow for complete processing
+            # Initialize the complete workflow system instead of just orchestrator
             self.workflow = SimpleAgenticWorkflow(llm, vector_store, graph_store)
-            
-            # Store vector_store and graph_store for later use
-            self.vector_store = vector_store
-            self.graph_store = graph_store
+            self.orchestrator_agent = self.workflow.orchestrator
             
             self.initialized = True
             logger.info("enhanced_agentic_system_initialized_successfully")
@@ -320,9 +433,8 @@ class EnhancedAgenticRAGApplication:
             }
         
         try:
-            # Return status based on actual initialized components
             return {
-                "status": "Initialized",
+                "status": "Active",
                 "agentic_capabilities": {
                     "comprehensive_analysis": self.query_analyzer is not None,
                     "dynamic_tool_selection": self.tool_selector is not None,
@@ -332,11 +444,11 @@ class EnhancedAgenticRAGApplication:
                     "security_integration": True
                 },
                 "components": {
-                    "query_analyzer": "initialized" if self.query_analyzer else "not_initialized",
-                    "tool_selector": "initialized" if self.tool_selector else "not_initialized",
-                    "execution_planner": "initialized" if self.execution_planner else "not_initialized",
-                    "orchestrator_agent": "initialized" if self.orchestrator_agent else "not_initialized",
-                    "learning_memory": "initialized" if self.learning_memory else "not_initialized"
+                    "query_analyzer": self.query_analyzer is not None,
+                    "tool_selector": self.tool_selector is not None,
+                    "execution_planner": self.execution_planner is not None,
+                    "orchestrator_agent": self.orchestrator_agent is not None,
+                    "learning_memory": self.learning_memory is not None
                 }
             }
         except Exception as e:
@@ -347,8 +459,8 @@ class EnhancedAgenticRAGApplication:
         """Reset all learning data for fresh start"""
         if self.initialized:
             try:
-                if hasattr(self.learning_memory, 'reset'):
-                    self.learning_memory.reset()
+                if self.learning_memory:
+                    self.learning_memory.clear_all_learning()
                 logger.info("learning_state_reset_successful")
                 return {"status": "success", "message": "All learning state reset successfully"}
             except Exception as e:
@@ -362,13 +474,13 @@ class EnhancedAgenticRAGApplication:
             return {"learning_data": "System not initialized"}
         
         try:
-            # Get basic learning insights from available components
             learning_insights = {}
-            component_stats = {}
-            
-            # Try to get insights from learning memory if available
-            if self.learning_memory and hasattr(self.learning_memory, 'get_insights'):
-                learning_insights = self.learning_memory.get_insights()
+            if self.learning_memory:
+                learning_insights = {
+                    "recent_adaptations": self.learning_memory.adaptation_count,
+                    "processing_patterns": self.learning_memory.query_patterns,
+                    "performance_trends": self.learning_memory.routing_performance
+                }
             
             return {
                 "learning_summary": {
@@ -378,19 +490,16 @@ class EnhancedAgenticRAGApplication:
                 },
                 "component_learning": {
                     "query_analyzer": {
-                        "status": "initialized" if self.query_analyzer else "not_initialized",
                         "total_analyses": 0,
                         "medical_query_percentage": 0,
                         "complexity_patterns": {}
                     },
                     "tool_selector": {
-                        "status": "initialized" if self.tool_selector else "not_initialized",
                         "total_selections": 0,
                         "tool_usage_patterns": {},
                         "most_effective_tool": "none"
                     },
                     "execution_planner": {
-                        "status": "initialized" if self.execution_planner else "not_initialized",
                         "total_executions": 0,
                         "success_rate": 0,
                         "most_effective_tools": {}

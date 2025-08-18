@@ -19,7 +19,7 @@ src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
-from enhanced_query_analyzer import ComprehensiveQueryAnalysis, ToolRequirementAnalysis
+from updated_agents.enhanced_query_analyzer import ComprehensiveQueryAnalysis, ToolRequirementAnalysis
 from core.input_sanitization import secure_llm_interaction
 from core.logging_config import get_logger
 from core.observability import traceable, get_traceable_config

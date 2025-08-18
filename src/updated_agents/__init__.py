@@ -53,8 +53,8 @@ from .simple_agentic_agents import (
 )
 
 from .simple_agentic_app import (
-    SimpleAgenticRAGApplication,
-    simple_agentic_app
+    EnhancedAgenticRAGApplication,
+    enhanced_agentic_app
 )
 
 __all__ = [
@@ -80,6 +80,6 @@ __all__ = [
     'create_simple_agentic_workflow',
     
     # Main application
-    'SimpleAgenticRAGApplication',
-    'simple_agentic_app'
+    'EnhancedAgenticRAGApplication',
+    'enhanced_agentic_app'
 ]

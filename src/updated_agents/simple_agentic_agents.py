@@ -26,7 +26,7 @@ if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
 # Import self-contained base classes and utilities
-from base_classes import (
+from updated_agents.base_classes import (
     WorkflowState, 
     SecureAgentBase, 
     AgentRole,
@@ -102,6 +102,13 @@ class LearningMemory:
         """Simple adaptation counter"""
         self.adaptation_count += 1
         logger.info("strategy_adapted", adaptation_count=self.adaptation_count)
+    
+    def clear_all_learning(self):
+        """Clear all learning data for fresh start"""
+        self.query_patterns.clear()
+        self.routing_performance.clear()
+        self.adaptation_count = 0
+        logger.info("learning_memory_cleared")
 
 # Global learning memory - simple singleton pattern
 learning_memory = LearningMemory()

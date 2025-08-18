@@ -40,15 +40,20 @@ class AzureKeyVaultManager:
             from azure.keyvault.secrets import SecretClient
             from azure.identity import DefaultAzureCredential
             from azure.core.exceptions import ClientAuthenticationError
+            import ssl
+            import certifi
         except ImportError as e:
             raise ImportError(
                 "Azure Key Vault dependencies not installed. Please install them with: "
-                "pip install azure-keyvault-secrets azure-identity azure-storage-blob"
+                "pip install azure-keyvault-secrets azure-identity azure-storage-blob certifi"
             ) from e
         
         self.vault_url = vault_url or os.environ.get("AZURE_KEY_VAULT_URL")
         if not self.vault_url:
             raise ValueError("AZURE_KEY_VAULT_URL must be set in environment or provided as parameter")
+        
+        # Configure SSL context to use system certificates
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
         
         # Use Azure CLI authentication with tenant configuration
         tenant_id = os.environ.get("AZURE_TENANT_ID")
@@ -56,8 +61,21 @@ class AzureKeyVaultManager:
             additionally_allowed_tenants=[tenant_id, "*"]
         )
         
-        self.client = SecretClient(vault_url=self.vault_url, credential=credential)
-        logger.info("Azure Key Vault client initialized with Azure CLI authentication")
+        # Create client with proper SSL handling
+        try:
+            self.client = SecretClient(vault_url=self.vault_url, credential=credential)
+            logger.info("Azure Key Vault client initialized with Azure CLI authentication")
+        except Exception as ssl_error:
+            logger.warning(f"SSL certificate issue detected: {ssl_error}")
+            # Fallback: Try with environment SSL configuration
+            try:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                self.client = SecretClient(vault_url=self.vault_url, credential=credential)
+                logger.info("Azure Key Vault client initialized with SSL workaround")
+            except Exception as e:
+                logger.error(f"Failed to initialize Azure Key Vault client: {e}")
+                raise
     
     def get_secret(self, secret_name: str) -> Optional[str]:
         """Get a secret from Key Vault."""

@@ -2,6 +2,7 @@ import streamlit as st
 import sys
 import os
 import time
+import asyncio
 from typing import Optional
 
 # Add path to your workflow - since we're in the agents folder, adjust the path
@@ -12,12 +13,23 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 try:
+    # Try to import agentic system first
+    from updated_agents.agentic_main import AgenticRAGApplication
+    AGENTIC_AVAILABLE = True
+except ImportError:
+    AGENTIC_AVAILABLE = False
+
+try:
+    # Fallback to original system
     from agents.multi_agent_rag_workflow import MultiAgentRAGWorkflow
     from core.security_middleware import SecurityViolationError
+    ORIGINAL_AVAILABLE = True
 except ImportError as e:
-    st.error(f"❌ Error importing required modules: {e}")
-    st.error("Make sure you're running from the correct directory and all dependencies are installed")
-    st.stop()
+    ORIGINAL_AVAILABLE = False
+    if not AGENTIC_AVAILABLE:
+        st.error(f"❌ Error importing required modules: {e}")
+        st.error("Make sure you're running from the correct directory and all dependencies are installed")
+        st.stop()
 
 # Custom CSS for professional styling
 def load_custom_css():
@@ -371,8 +383,14 @@ def load_custom_css():
 def init_session_state():
     if 'workflow' not in st.session_state:
         st.session_state.workflow = None
+    if 'agentic_app' not in st.session_state:
+        st.session_state.agentic_app = None
     if 'workflow_ready' not in st.session_state:
         st.session_state.workflow_ready = False
+    if 'agentic_ready' not in st.session_state:
+        st.session_state.agentic_ready = False
+    if 'use_agentic' not in st.session_state:
+        st.session_state.use_agentic = AGENTIC_AVAILABLE
     if 'query_history' not in st.session_state:
         st.session_state.query_history = []
     if 'last_query' not in st.session_state:
@@ -389,29 +407,41 @@ def initialize_workflow():
     except Exception as e:
         return None, False, str(e)
 
-def display_status_indicator(ready: bool, error: Optional[str] = None):
+# Initialize the agentic application
+async def initialize_agentic_app():
+    """Initialize the Agentic RAG Application"""
+    try:
+        app = AgenticRAGApplication()
+        success = await app.initialize()
+        return app, success, None
+    except Exception as e:
+        return None, False, str(e)
+
+def display_status_indicator(ready: bool, agentic_ready: bool = False, error: Optional[str] = None):
     """Display the current system status"""
-    # Commented out to remove system status messages
-    # if error:
-    #     st.markdown(f"""
-    #     <div class="status-indicator status-error">
-    #         ❌ Error: {error}
-    #     </div>
-    #     """, unsafe_allow_html=True)
-    # elif ready:
-    #     st.markdown("""
-    #     <div class="status-indicator status-ready">
-    #         ✅ System Ready
-    #     </div>
-    #     """, unsafe_allow_html=True)
-    # else:
-    #     st.markdown("""
-    #     <div class="status-indicator status-loading">
-    #         <div class="loading-spinner"></div>
-    #         ⏳ Initializing...
-    #     </div>
-    #     """, unsafe_allow_html=True)
-    pass  # Do nothing - no status messages displayed
+    if AGENTIC_AVAILABLE and st.session_state.use_agentic:
+        if error:
+            st.markdown(f"""
+            <div class="status-indicator status-error">
+                ❌ Agentic System Error: {error}
+            </div>
+            """, unsafe_allow_html=True)
+        elif agentic_ready:
+            st.markdown("""
+            <div class="status-indicator status-ready">
+                🤖 Agentic System Ready - Autonomous AI with Learning
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="status-indicator status-loading">
+                <div class="loading-spinner"></div>
+                ⏳ Initializing Agentic System...
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        # Original status display logic (commented out to remove status messages)
+        pass
 
 def display_example_queries():
     """Display example queries in compact format"""
@@ -441,14 +471,77 @@ def display_example_queries():
                 st.session_state.last_query = example
                 st.rerun()
 
-def process_query(workflow: MultiAgentRAGWorkflow, query: str):
+def process_query(workflow, query: str):
     """Process a query through the workflow with error handling and timing"""
     try:
         start_time = time.time()
         
-        # Display processing status
-        with st.spinner("🧠 Processing your query through the multi-agent RAG workflow..."):
-            result = workflow.run(query)
+        if st.session_state.use_agentic and AGENTIC_AVAILABLE and hasattr(workflow, 'process_query'):
+            # Display agentic processing status
+            with st.spinner("� Processing with autonomous agentic reasoning..."):
+                # Use asyncio for agentic processing
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(workflow.process_query(query))
+                finally:
+                    loop.close()
+            
+            # Enhanced result display for agentic system
+            st.markdown("""
+            <h3 style="color: var(--success-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600; margin-top: calc(var(--spacing-unit) * 2);">
+                🤖 Agentic Analysis Result
+            </h3>
+            """, unsafe_allow_html=True)
+            
+            # Display answer
+            answer = result.get('answer', 'No answer provided')
+            st.markdown(f"""
+            <div style="background: var(--background-card); padding: calc(var(--spacing-unit) * 1.5); border-radius: var(--border-radius-sm); border: 1px solid var(--border-color); border-left: 4px solid #8b5cf6; margin-bottom: calc(var(--spacing-unit) * 1); font-size: 0.95rem; line-height: 1.4;">
+                {answer}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Display agentic metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                quality_score = result.get('answer_quality', 0)
+                st.metric("Quality Score", f"{quality_score:.2f}")
+            with col2:
+                execution_time = result.get('execution_time', 0)
+                st.metric("Response Time", f"{execution_time:.2f}s")
+            with col3:
+                sources_used = len(result.get('sources_used', []))
+                st.metric("Sources Used", sources_used)
+            with col4:
+                trace_id = result.get('trace_id', 'N/A')
+                st.metric("Trace ID", trace_id[-8:] if trace_id != 'N/A' else 'N/A')
+            
+            # Show learning indicator if applicable
+            if result.get('learning_applied'):
+                st.markdown("""
+                <div style="background: linear-gradient(135deg, #06d6a0, #10b981); color: white; padding: calc(var(--spacing-unit) * 1); border-radius: var(--border-radius-sm); font-size: 0.9rem; font-weight: 500; margin: calc(var(--spacing-unit) * 1) 0;">
+                    🎓 Learning Applied: System adapted based on execution patterns
+                </div>
+                """, unsafe_allow_html=True)
+            
+        else:
+            # Original workflow processing
+            with st.spinner("🧠 Processing your query through the multi-agent RAG workflow..."):
+                result = workflow.run(query)
+            
+            # Original result display
+            st.markdown("""
+            <h3 style="color: var(--success-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600; margin-top: calc(var(--spacing-unit) * 2);">
+                ✅ Query Result
+            </h3>
+            """, unsafe_allow_html=True)
+            
+            st.markdown(f"""
+            <div style="background: var(--background-card); padding: calc(var(--spacing-unit) * 1.5); border-radius: var(--border-radius-sm); border: 1px solid var(--border-color); border-left: 4px solid var(--success-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 0.95rem; line-height: 1.4;">
+                {result}
+            </div>
+            """, unsafe_allow_html=True)
         
         end_time = time.time()
         response_time = end_time - start_time
@@ -458,21 +551,9 @@ def process_query(workflow: MultiAgentRAGWorkflow, query: str):
             'query': query,
             'result': result,
             'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
-            'response_time': response_time
+            'response_time': response_time,
+            'system_type': 'agentic' if st.session_state.use_agentic else 'original'
         })
-        
-        # Display success result with text but no panel
-        st.markdown("""
-        <h3 style="color: var(--success-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600; margin-top: calc(var(--spacing-unit) * 2);">
-            ✅ Query Result
-        </h3>
-        """, unsafe_allow_html=True)
-        
-        st.markdown(f"""
-        <div style="background: var(--background-card); padding: calc(var(--spacing-unit) * 1.5); border-radius: var(--border-radius-sm); border: 1px solid var(--border-color); border-left: 4px solid var(--success-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 0.95rem; line-height: 1.4;">
-            {result}
-        </div>
-        """, unsafe_allow_html=True)
         
         return True
         
@@ -505,12 +586,20 @@ def process_query(workflow: MultiAgentRAGWorkflow, query: str):
 def main():
     """Main Streamlit application"""
     # Page configuration
-    st.set_page_config(
-        page_title="Multi-Agent RAG System",
-        page_icon="🧠",
-        layout="wide",
-        initial_sidebar_state="collapsed"
-    )
+    if AGENTIC_AVAILABLE:
+        st.set_page_config(
+            page_title="Agentic Multi-Agent RAG System",
+            page_icon="�",
+            layout="wide",
+            initial_sidebar_state="collapsed"
+        )
+    else:
+        st.set_page_config(
+            page_title="Multi-Agent RAG System",
+            page_icon="�🧠",
+            layout="wide",
+            initial_sidebar_state="collapsed"
+        )
     
     # Load custom CSS
     load_custom_css()
@@ -518,32 +607,78 @@ def main():
     # Initialize session state
     init_session_state()
     
-    # App header
-    st.markdown("""
-    <div class="app-header">
-        <h1 class="app-title">🧠 Multi-Agent RAG System</h1>
-        <p class="app-subtitle">Intelligent Document Analysis with Advanced AI Agents</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Initialize workflow silently
-    if 'workflow' not in st.session_state or st.session_state.workflow is None:
-        workflow, workflow_ready, error = initialize_workflow()
-        st.session_state.workflow = workflow
-        st.session_state.workflow_ready = workflow_ready
-        st.session_state.workflow_error = error
+    # App header with system selection
+    if AGENTIC_AVAILABLE:
+        st.markdown("""
+        <div class="app-header">
+            <h1 class="app-title">� Enhanced Multi-Agent RAG System</h1>
+            <p class="app-subtitle">Choose between Original and Agentic AI with Autonomous Reasoning & Learning</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # System selection
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            system_choice = st.radio(
+                "Select System:",
+                ["🤖 Agentic System (Autonomous + Learning)", "�🧠 Original System (Static)"],
+                index=0 if st.session_state.use_agentic else 1,
+                horizontal=True
+            )
+            st.session_state.use_agentic = "Agentic" in system_choice
+        
+        with col2:
+            if st.button("🔄 Reset Learning", help="Reset all learning data in agentic system"):
+                if st.session_state.agentic_app:
+                    st.session_state.agentic_app.reset_learning_state()
+                    st.success("Learning state reset!")
     else:
-        workflow = st.session_state.workflow
-        workflow_ready = st.session_state.workflow_ready
-        error = st.session_state.get('workflow_error')
+        st.markdown("""
+        <div class="app-header">
+            <h1 class="app-title">🧠 Multi-Agent RAG System</h1>
+            <p class="app-subtitle">Intelligent Document Analysis with Advanced AI Agents</p>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Display status (already hidden via display_status_indicator)
-    display_status_indicator(workflow_ready, error)
+    # Initialize appropriate workflow
+    if st.session_state.use_agentic and AGENTIC_AVAILABLE:
+        # Initialize agentic system
+        if 'agentic_app' not in st.session_state or st.session_state.agentic_app is None:
+            with st.spinner("🤖 Initializing Agentic System..."):
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    app, agentic_ready, error = loop.run_until_complete(initialize_agentic_app())
+                    st.session_state.agentic_app = app
+                    st.session_state.agentic_ready = agentic_ready
+                    st.session_state.agentic_error = error
+                finally:
+                    loop.close()
+        
+        workflow = st.session_state.agentic_app
+        workflow_ready = st.session_state.agentic_ready
+        error = st.session_state.get('agentic_error')
+        
+    else:
+        # Initialize original system
+        if 'workflow' not in st.session_state or st.session_state.workflow is None:
+            workflow, workflow_ready, error = initialize_workflow()
+            st.session_state.workflow = workflow
+            st.session_state.workflow_ready = workflow_ready
+            st.session_state.workflow_error = error
+        else:
+            workflow = st.session_state.workflow
+            workflow_ready = st.session_state.workflow_ready
+            error = st.session_state.get('workflow_error')
+    
+    # Display status
+    display_status_indicator(workflow_ready, st.session_state.get('agentic_ready', False), error)
     
     # Main interface
     if workflow_ready and workflow:
         # Query input section - compact alignment
-        st.markdown("### 💬 Ask Your Question")
+        system_name = "Agentic" if st.session_state.use_agentic else "Standard"
+        st.markdown(f"### 💬 Ask Your Question ({system_name} Mode)")
         
         # Create container for better alignment
         query_container = st.container()
@@ -587,27 +722,47 @@ def main():
         # Example queries
         display_example_queries()
         
+        # Display additional agentic features if available
+        if st.session_state.use_agentic and AGENTIC_AVAILABLE and workflow:
+            with st.expander("📊 Agentic System Performance", expanded=False):
+                capabilities_report = workflow.get_agentic_capabilities_report()
+                workflow_perf = capabilities_report.get('workflow_performance', {})
+                recent_perf = workflow_perf.get('recent_performance', {})
+                
+                if recent_perf:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        success_rate = recent_perf.get('success_rate', 0)
+                        st.metric("Success Rate", f"{success_rate:.1%}")
+                    with col2:
+                        avg_quality = recent_perf.get('avg_answer_quality', 0)
+                        st.metric("Avg Quality", f"{avg_quality:.2f}")
+                    with col3:
+                        avg_time = recent_perf.get('avg_execution_time', 0)
+                        st.metric("Avg Time", f"{avg_time:.1f}s")
+                else:
+                    st.info("No performance data available yet. Process some queries to see metrics.")
+        
     else:
         # Error state
-        st.markdown("""
+        system_name = "Agentic Multi-Agent RAG" if st.session_state.use_agentic else "Multi-Agent RAG"
+        st.markdown(f"""
         <div class="custom-card">
             <h3 style="color: var(--error-color); margin-bottom: calc(var(--spacing-unit) * 1); font-size: 1rem; font-weight: 600;">
-                ⚠️ System Unavailable
+                ⚠️ {system_name} System Unavailable
             </h3>
             <p style="color: var(--text-secondary); margin: 0; font-size: 0.95rem; line-height: 1.4;">
-                The Multi-Agent RAG Workflow could not be initialized. Please check the system configuration and try again.
+                The {system_name} Workflow could not be initialized. Please check the system configuration and try again.
             </p>
         </div>
         """, unsafe_allow_html=True)
         
         if st.button("🔄 Retry Initialization"):
             # Clear session state to force re-initialization
-            if 'workflow' in st.session_state:
-                del st.session_state.workflow
-            if 'workflow_ready' in st.session_state:
-                del st.session_state.workflow_ready
-            if 'workflow_error' in st.session_state:
-                del st.session_state.workflow_error
+            keys_to_clear = ['workflow', 'workflow_ready', 'workflow_error', 'agentic_app', 'agentic_ready', 'agentic_error']
+            for key in keys_to_clear:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.rerun()
 
 if __name__ == "__main__":

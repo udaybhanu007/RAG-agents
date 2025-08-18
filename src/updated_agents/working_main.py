@@ -15,6 +15,9 @@ src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
+# Import Azure Key Vault manager for secure secret management
+from core.azure_keyvault_manager import get_secret_from_keyvault
+
 # Load environment variables from .env.dev
 env_path = os.path.join(os.path.dirname(os.path.dirname(current_dir)), '.env.dev')
 load_dotenv(env_path)
@@ -39,19 +42,19 @@ def main():
         from langchain_openai import AzureChatOpenAI
         from qdrant_client import QdrantClient
         
-        print("\n1. LOADING CONFIGURATION FROM .env.dev")
+        print("\n1. LOADING CONFIGURATION FROM AZURE KEY VAULT")
         print("-" * 50)
         
-        # Get real configuration from .env.dev
-        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-        azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-        qdrant_url = os.getenv("QDRANT_API_URL")
-        qdrant_api_key = os.getenv("QDRANT_API_KEY")
-        neo4j_uri = os.getenv("NEO4J_URI")
-        neo4j_username = os.getenv("NEO4J_USERNAME")
-        neo4j_password = os.getenv("NEO4J_PASSWORD")
+        # Get real configuration using Azure Key Vault integration
+        azure_endpoint = get_secret_from_keyvault("AZURE_OPENAI_ENDPOINT")
+        azure_api_key = get_secret_from_keyvault("AZURE_OPENAI_API_KEY")
+        azure_deployment = get_secret_from_keyvault("AZURE_OPENAI_DEPLOYMENT")
+        azure_api_version = get_secret_from_keyvault("AZURE_OPENAI_API_VERSION")
+        qdrant_url = get_secret_from_keyvault("QDRANT_API_URL")
+        qdrant_api_key = get_secret_from_keyvault("QDRANT_API_KEY")
+        neo4j_uri = get_secret_from_keyvault("NEO4J_URI")
+        neo4j_username = get_secret_from_keyvault("NEO4J_USERNAME")
+        neo4j_password = get_secret_from_keyvault("NEO4J_PASSWORD")
         
         print(f"   ✓ Azure OpenAI Endpoint: {azure_endpoint}")
         print(f"   ✓ Azure Deployment: {azure_deployment}")
@@ -72,16 +75,19 @@ def main():
         
         # Initialize Qdrant vector database
         import re
-        url_match = re.match(r'https?://([^:]+):(\d+)', qdrant_url)
-        if url_match:
-            host = url_match.group(1)
-            port = int(url_match.group(2))
-            vector_client = QdrantClient(
-                host=host,
-                port=port,
-                api_key=qdrant_api_key,
-                https=True
-            )
+        if qdrant_url:
+            url_match = re.match(r'https?://([^:]+):(\d+)', qdrant_url)
+            if url_match:
+                host = url_match.group(1)
+                port = int(url_match.group(2))
+                vector_client = QdrantClient(
+                    host=host,
+                    port=port,
+                    api_key=qdrant_api_key,
+                    https=True
+                )
+            else:
+                vector_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
         else:
             vector_client = QdrantClient(host="localhost", port=6333)
         print(f"   ✓ Qdrant Vector Database connected")
@@ -104,8 +110,11 @@ def main():
         if init_result["status"] == "success":
             print("   ✓ Enhanced Agentic RAG System initialized successfully")
             capabilities = init_result.get('capabilities', {})
-            for capability, enabled in capabilities.items():
-                print(f"   ✓ {capability.replace('_', ' ').title()}: {enabled}")
+            if isinstance(capabilities, dict):
+                for capability, enabled in capabilities.items():
+                    print(f"   ✓ {capability.replace('_', ' ').title()}: {enabled}")
+            else:
+                print(f"   ✓ Capabilities: {capabilities}")
         else:
             print(f"   ✗ Initialization failed: {init_result['message']}")
             return

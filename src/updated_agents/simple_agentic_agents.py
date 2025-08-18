@@ -31,6 +31,11 @@ src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
+# Import Azure Key Vault manager for secure secret management
+from core.azure_keyvault_manager import get_secret_from_keyvault
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
 # Import self-contained base classes and utilities
 from updated_agents.base_classes import (
     WorkflowState, 
@@ -190,9 +195,13 @@ def _initialize_embeddings_fast():
         logger.error("embeddings_initialization_failed", error=str(e))
         return None
 
-def _initialize_bm25_retriever(qdrant_client, collection_name: str = "medical_research_doc", max_docs: int = 500):
+def _initialize_bm25_retriever(qdrant_client, collection_name: Optional[str] = None, max_docs: int = 500):
     """Initialize BM25 retriever from Qdrant documents with optimized fetching."""
     try:
+        # Use Azure Key Vault to get collection name if not provided
+        if not collection_name:
+            collection_name = get_secret_from_keyvault("QDRANT_COLLECTION") or "medical_research_doc"
+        
         logger.info("bm25_initialization_started", collection=collection_name)
         
         # Optimized document fetching - limit to reasonable size for faster init
@@ -717,33 +726,64 @@ class AgenticVectorRAGAgent(SecureAgentBase):
             self._embeddings_initialized = True
         return self.embeddings
     
+    def _get_collection_name(self):
+        """Get collection name from Azure Key Vault only"""
+        try:
+            # Get collection name from Azure Key Vault
+            collection_name = get_secret_from_keyvault("QDRANT_COLLECTION")
+            
+            if collection_name:
+                logger.info("using_keyvault_collection", collection_name=collection_name)
+                return collection_name
+            else:
+                logger.error("collection_name_not_found_in_keyvault")
+                return None
+            
+        except Exception as e:
+            logger.error("keyvault_collection_name_retrieval_failed", error=str(e))
+            return None
+    
     def _get_bm25_retriever_lazy(self):
         """Lazy initialization of BM25 retriever - only when needed for hybrid search"""
-        if not self._bm25_initialized and self.vector_store:
-            # Try to initialize BM25 from available collections
+        # Return cached retriever if already initialized successfully
+        if self._bm25_initialized:
+            return self.bm25_retriever
+        
+        # Only attempt initialization if we have a vector store and haven't initialized yet
+        if self.vector_store:
             try:
-                collections = self.vector_store.get_collections()
-                for collection in collections.collections:
-                    if any(keyword in collection.name.lower() for keyword in ['medical', 'chest', 'xray', 'document']):
+                logger.info("initializing_bm25_retriever_first_time")
+                # Get collection name using centralized method
+                collection_name = self._get_collection_name()
+                
+                if collection_name:
+                    try:
                         self.bm25_retriever = _initialize_bm25_retriever(
-                            self.vector_store, 
-                            collection.name, 
+                            self.vector_store,
+                            collection_name,
                             max_docs=500
                         )
-                        break
+                        if self.bm25_retriever:
+                            self._bm25_initialized = True
+                            logger.info("bm25_retriever_initialized_successfully")
+                        else:
+                            logger.warning("bm25_retriever_initialization_returned_none")
+                            self._bm25_initialized = True  # Mark as attempted to avoid repeated tries
+                    except Exception as e:
+                        logger.warning("bm25_collection_initialization_failed", 
+                                     collection_name=collection_name, error=str(e))
+                        self._bm25_initialized = True  # Mark as attempted to avoid repeated tries
+                else:
+                    logger.warning("no_collection_name_available_for_bm25")
+                    self._bm25_initialized = True  # Mark as attempted to avoid repeated tries
                 
-                if not self.bm25_retriever and collections.collections:
-                    # Use first available collection if no medical-specific found
-                    self.bm25_retriever = _initialize_bm25_retriever(
-                        self.vector_store, 
-                        collections.collections[0].name, 
-                        max_docs=500
-                    )
             except Exception as e:
                 logger.warning("bm25_lazy_initialization_failed", error=str(e))
                 self.bm25_retriever = None
-            
-            self._bm25_initialized = True
+                self._bm25_initialized = True  # Mark as attempted to avoid repeated tries
+        else:
+            logger.warning("no_vector_store_available_for_bm25")
+            self._bm25_initialized = True  # Mark as attempted to avoid repeated tries
         
         return self.bm25_retriever
     
@@ -795,18 +835,8 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                 try:
                     logger.info("performing_vector_search")
                     
-                    # Get available collections
-                    collections = self.vector_store.get_collections()
-                    collection_name = None
-                    
-                    # Find medical-related collection
-                    for collection in collections.collections:
-                        if any(keyword in collection.name.lower() for keyword in ['medical', 'chest', 'xray', 'document']):
-                            collection_name = collection.name
-                            break
-                    
-                    if not collection_name and collections.collections:
-                        collection_name = collections.collections[0].name
+                    # Get collection name using centralized method
+                    collection_name = self._get_collection_name()
                     
                     if collection_name:
                         # Perform vector search
@@ -864,7 +894,7 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                 except Exception as e:
                     logger.warning("bm25_search_failed", error=str(e))
             
-            # Merge results using hybrid approach
+            # Check if we have any real database results (not simulation)
             if vector_docs or bm25_docs:
                 combined_docs = _merge_search_results(vector_docs, bm25_docs)
                 
@@ -907,32 +937,15 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                     bm25_count=len(bm25_docs)
                 )
             
-            # Fallback to enhanced medical simulation
-            logger.info("using_enhanced_medical_simulation_fallback")
-            simulation_docs = [
-                {
-                    "content": f"The NIH Chest X-ray Dataset contains over 100,000 frontal-view X-ray images from more than 30,000 unique patients. This large collection is commonly used for medical AI research and machine learning model training for pathology detection. Query context: {query}",
-                    "score": 0.85,
-                    "metadata": {"source": "nih_dataset_info", "type": "medical_dataset"},
-                    "source": "enhanced_simulation",
-                    "hybrid_score": 0.85
-                },
-                {
-                    "content": f"Medical imaging analysis focuses on automated detection of chest pathologies including pneumonia, atelectasis, consolidation, edema, and other conditions. Advanced AI models are trained on large datasets like NIH Chest X-ray for accurate diagnosis. Related query: {query}",
-                    "score": 0.75,
-                    "metadata": {"source": "medical_ai_info", "type": "pathology_detection"},
-                    "source": "enhanced_simulation",
-                    "hybrid_score": 0.75
-                }
-            ]
-            
+            # No real data found in Qdrant database - return empty result for medical queries
+            logger.warning("no_data_found_in_qdrant_database", query=query)
             return VectorSearchResult(
-                documents=simulation_docs,
-                total_found=len(simulation_docs),
+                documents=[],
+                total_found=0,
                 search_params=self.adaptive_params.copy(),
-                search_strategy="enhanced_simulation",
-                vector_count=0,
-                bm25_count=0
+                search_strategy="no_data_found",
+                vector_count=len(vector_docs),
+                bm25_count=len(bm25_docs)
             )
             
         except Exception as e:
@@ -1090,11 +1103,15 @@ class SimpleValidatorAgent(SecureAgentBase):
         vector_results = state.get("vector_results", {}).get("documents", [])
         graph_results = state.get("graph_results", {}).get("documents", [])
         
+        # Check if we have a "no_data_found" scenario from vector search
+        vector_strategy = state.get("vector_results", {}).get("search_strategy", "")
+        
         all_documents = vector_results + graph_results
         logger.debug("validation_documents_collected", 
                     vector_count=len(vector_results),
                     graph_count=len(graph_results),
-                    total_count=len(all_documents))
+                    total_count=len(all_documents),
+                    vector_strategy=vector_strategy)
         
         if all_documents:
             # Simple validation logic with structured output
@@ -1107,14 +1124,24 @@ class SimpleValidatorAgent(SecureAgentBase):
             state["validation"] = validation_result.dict()
             logger.info("validation_passed", score=0.8, documents_count=len(all_documents))
         else:
-            validation_result = ValidationResult(
-                is_valid=False,
-                score=0.0,
-                feedback="No valid results found for validation"
-            )
+            # Check if this is a "no_data_found" case for better feedback
+            if vector_strategy == "no_data_found":
+                validation_result = ValidationResult(
+                    is_valid=False,
+                    score=0.0,
+                    feedback="No data found in medical database for the query"
+                )
+                logger.warning("validation_failed", reason="no_data_found_in_database")
+            else:
+                validation_result = ValidationResult(
+                    is_valid=False,
+                    score=0.0,
+                    feedback="No valid results found for validation"
+                )
+                logger.warning("validation_failed", reason="no_documents")
+            
             state["validated_results"] = []
             state["validation"] = validation_result.dict()
-            logger.warning("validation_failed", reason="no_documents")
         
         return validation_result
 
@@ -1134,13 +1161,28 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
         validated_results = state.get("validated_results", [])
         query = state.get("query", "")
         
+        # Check if this is a medical query and if we have no data from database
+        vector_results = state.get("vector_results", {})
+        search_strategy = vector_results.get("search_strategy", "")
+        
+        # First check if we have no results at all
         if not validated_results:
             logger.warning("synthesis_no_results")
-            return SynthesisResult(
-                answer="I couldn't find relevant information to answer your question.",
-                confidence=0.0,
-                sources=[]
-            )
+            
+            # Check if this was a medical query with no data found in database
+            if search_strategy == "no_data_found":
+                logger.info("medical_query_no_database_results", query=query)
+                return SynthesisResult(
+                    answer="No data found in the medical database for your query. The requested medical information is not available in our current dataset.",
+                    confidence=0.0,
+                    sources=[]
+                )
+            else:
+                return SynthesisResult(
+                    answer="I couldn't find relevant information to answer your question.",
+                    confidence=0.0,
+                    sources=[]
+                )
         
         # Extract and prepare context from documents
         context_pieces = []

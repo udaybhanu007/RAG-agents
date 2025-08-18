@@ -15,6 +15,9 @@ src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
+# Import Azure Key Vault manager for secure secret management
+from core.azure_keyvault_manager import get_secret_from_keyvault
+
 from updated_agents.enhanced_query_analyzer import EnhancedQueryAnalyzer
 from updated_agents.dynamic_tool_selector import DynamicToolSelector
 from updated_agents.execution_planner import ExecutionPlanner
@@ -63,77 +66,79 @@ class EnhancedAgenticRAGApplication:
             from neo4j import GraphDatabase
             
             # Initialize Azure Key Vault Manager with proper environment handling
+            # Use proper Azure Key Vault integration
             try:
-                # Check if Key Vault is enabled
-                from dotenv import load_dotenv
-                import os
+                logger.info("using_azure_keyvault_integration")
                 
-                # Load environment configuration
-                load_dotenv()
-                keyvalue_enabled = os.getenv('Keyvalue_Enabled', 'true').lower() == 'true'
+                # Initialize Azure OpenAI LLM using Key Vault secrets
+                azure_endpoint = get_secret_from_keyvault("AZURE_OPENAI_ENDPOINT")
+                azure_api_key = get_secret_from_keyvault("AZURE_OPENAI_API_KEY")
+                azure_deployment = get_secret_from_keyvault("AZURE_OPENAI_DEPLOYMENT")
+                azure_api_version = get_secret_from_keyvault("AZURE_OPENAI_API_VERSION")
                 
-                if keyvalue_enabled:
-                    # Use Azure Key Vault
-                    keyvault_manager = AzureKeyVaultManager()
-                    logger.debug("azure_keyvault_manager_initialized")
-                else:
-                    # Use environment variables (.env.dev is already loaded by azure_keyvault_manager.py)
-                    class EnvironmentKeyVaultManager:
-                        def get_secret(self, secret_name: str):
-                            # Map secret names to environment variable names
-                            env_map = {
-                                "azure-openai-endpoint": "AZURE_OPENAI_ENDPOINT",
-                                "azure-openai-api-key": "AZURE_OPENAI_API_KEY",
-                                "neo4j-uri": "NEO4J_URI",
-                                "neo4j-username": "NEO4J_USERNAME", 
-                                "neo4j-password": "NEO4J_PASSWORD"
-                            }
-                            env_var = env_map.get(secret_name, secret_name.upper().replace('-', '_'))
-                            return os.getenv(env_var)
-                    
-                    keyvault_manager = EnvironmentKeyVaultManager()
-                    logger.info("using_environment_variables_keyvault_disabled")
-                    
-            except Exception as e:
-                logger.error("keyvault_initialization_failed", error=str(e))
-                raise ValueError(f"Failed to initialize key management: {str(e)}")
-            
-            # Initialize Azure OpenAI LLM with error handling
-            try:
-                azure_endpoint = keyvault_manager.get_secret("azure-openai-endpoint")
-                api_key = keyvault_manager.get_secret("azure-openai-api-key")
+                if not all([azure_endpoint, azure_api_key, azure_deployment, azure_api_version]):
+                    raise ValueError("Missing required Azure OpenAI configuration. Check Azure Key Vault or .env.dev file.")
                 
-                if not azure_endpoint or not api_key:
-                    raise ValueError("Missing Azure OpenAI credentials")
-                    
+                from langchain_openai import AzureChatOpenAI
                 llm = AzureChatOpenAI(
                     azure_endpoint=azure_endpoint,
-                    api_key=api_key,
-                    api_version="2024-05-01-preview",
-                    deployment_name="gpt-4o-mini",
-                    temperature=0.1
+                    api_key=azure_api_key,
+                    azure_deployment=azure_deployment,
+                    api_version=azure_api_version,
+                    temperature=0.0
                 )
-                logger.debug("azure_llm_initialized")
+                logger.debug("azure_llm_initialized_with_keyvault")
+                
             except Exception as e:
                 logger.error("azure_llm_initialization_failed", error=str(e))
                 raise ValueError(f"Failed to initialize Azure OpenAI LLM: {str(e)}")
             
-            # Initialize Qdrant vector store
+            # Initialize Qdrant vector store using Key Vault secrets
             try:
-                vector_client = QdrantClient(host="localhost", port=6333)
-                logger.debug("qdrant_vector_client_initialized")
+                qdrant_url = get_secret_from_keyvault("QDRANT_API_URL")
+                qdrant_api_key = get_secret_from_keyvault("QDRANT_API_KEY")
+                
+                if qdrant_url and qdrant_api_key:
+                    from qdrant_client import QdrantClient
+                    import re
+                    
+                    # Parse URL for Qdrant client initialization
+                    url_match = re.match(r'https?://([^:]+):(\d+)', qdrant_url)
+                    if url_match:
+                        host = url_match.group(1)
+                        port = int(url_match.group(2))
+                        vector_client = QdrantClient(
+                            host=host,
+                            port=port,
+                            api_key=qdrant_api_key,
+                            https=True
+                        )
+                    else:
+                        vector_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+                    logger.debug("qdrant_vector_client_initialized_with_secrets")
+                else:
+                    # Fallback to local Qdrant
+                    from qdrant_client import QdrantClient
+                    vector_client = QdrantClient(host="localhost", port=6333)
+                    logger.debug("qdrant_vector_client_initialized_local_fallback")
+                
             except Exception as e:
                 logger.warning("qdrant_initialization_failed", error=str(e))
                 vector_client = None
             
-            # Initialize Neo4j graph store
+            # Initialize Neo4j graph store using Key Vault secrets
             try:
-                neo4j_uri = keyvault_manager.get_secret("neo4j-uri") or "bolt://localhost:7687"
-                neo4j_user = keyvault_manager.get_secret("neo4j-username") or "neo4j"
-                neo4j_password = keyvault_manager.get_secret("neo4j-password") or "password"
+                neo4j_uri = get_secret_from_keyvault("NEO4J_URI")
+                neo4j_user = get_secret_from_keyvault("NEO4J_USERNAME")
+                neo4j_password = get_secret_from_keyvault("NEO4J_PASSWORD")
                 
-                graph_store = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
-                logger.debug("neo4j_graph_store_initialized")
+                if neo4j_uri and neo4j_user and neo4j_password:
+                    from neo4j import GraphDatabase
+                    graph_store = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+                    logger.debug("neo4j_graph_store_initialized_with_secrets")
+                else:
+                    logger.warning("neo4j_credentials_missing", uri=bool(neo4j_uri), user=bool(neo4j_user), password=bool(neo4j_password))
+                    graph_store = None
             except Exception as e:
                 logger.warning("neo4j_initialization_failed", error=str(e))
                 graph_store = None

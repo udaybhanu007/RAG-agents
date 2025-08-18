@@ -149,7 +149,7 @@ def main():
         with st.expander("💡 Try These Examples"):
             examples = [
                 "What is NIH Chest X-ray?",
-                "Main findings in X-ray analysis", 
+                "Main findings in X-ray analysis in  healthcare?", 
                 "Male patients with effusion",
                 "Dataset age relationships"
             ]

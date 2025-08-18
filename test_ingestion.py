@@ -43,32 +43,32 @@ def main():
         print(f"  Relationships: {stats.get('relationships', {})}")
         
         # Run ingestion
-        print(f"\nStarting ingestion...")
-        result = ingestor.ingest_csv_to_neo4j(csv_file, clear_existing=True)
+        # print(f"\nStarting ingestion...")
+        # result = ingestor.ingest_csv_to_neo4j(csv_file, clear_existing=True)
         
-        print(f"\nIngestion Result:")
-        print(f"  Success: {result.success}")
-        print(f"  Nodes Created: {result.nodes_created}")
-        print(f"  Relationships Created: {result.relationships_created}")
-        print(f"  Execution Time: {result.execution_time:.2f}s")
+        # print(f"\nIngestion Result:")
+        # print(f"  Success: {result.success}")
+        # print(f"  Nodes Created: {result.nodes_created}")
+        # print(f"  Relationships Created: {result.relationships_created}")
+        # print(f"  Execution Time: {result.execution_time:.2f}s")
         
-        if result.errors:
-            print(f"  Errors: {result.errors}")
+        # if result.errors:
+        #     print(f"  Errors: {result.errors}")
         
-        # Check final state
-        if result.success:
-            stats = ingestor.get_graph_statistics()
-            print(f"\nFinal database state:")
-            print(f"  Nodes: {stats.get('nodes', {})}")
-            print(f"  Relationships: {stats.get('relationships', {})}")
-            
-            # Test the failing query
-            print(f"\nTesting GraphRAG query...")
-            query = "MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.age < 40 RETURN count(*) as count"
-            result = ingestor.query_graph(query)
-            print(f"Query result: {result}")
+        # # Check final state
+        # if result.success:
+        stats = ingestor.get_graph_statistics()
+        print(f"\nFinal database state:")
+        print(f"  Nodes: {stats.get('nodes', {})}")
+        print(f"  Relationships: {stats.get('relationships', {})}")
         
-        ingestor.close()
+        # Test the failing query
+        print(f"\nTesting GraphRAG query...")
+        query = "MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.age < 40 RETURN count(*) as count"
+        result = ingestor.query_graph(query)
+        print(f"Query result: {result}")
+        
+        #ingestor.close()
         
     except Exception as e:
         print(f"Error: {e}")

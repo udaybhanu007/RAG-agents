@@ -67,7 +67,6 @@ class StructuredDocumentIngestor:
             self._llm = AzureChatOpenAI(
                 azure_deployment=azure_deployment,
                 api_version=azure_api_version,
-                temperature=0.0,
                 max_tokens=4000
             )
             logger.info("Azure OpenAI LLM initialized for schema extraction")

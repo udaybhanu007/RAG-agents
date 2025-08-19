@@ -262,7 +262,7 @@ class VectorSearchResult(BaseModel):
     documents: List[Dict[str, Any]] = Field(description="Retrieved documents with scores")
     total_found: int = Field(description="Total number of documents found")
     search_params: Dict[str, Any] = Field(description="Search parameters used")
-    search_strategy: str = Field(description="Strategy used: vector_only, hybrid, or enhanced_simulation", default="vector_only")
+    search_strategy: str = Field(description="Strategy used: vector_only, hybrid, or bm25_only", default="vector_only")
     vector_count: int = Field(description="Number of documents from vector search", default=0)
     bm25_count: int = Field(description="Number of documents from BM25 search", default=0)
 
@@ -338,7 +338,6 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         
         return state
 
-    @tool
     @traceable(**get_traceable_config("AgenticOrchestratorAgent"))
     def validate_medical_relevance_tool(self, query: str) -> Dict[str, Any]:
         """Tool to validate medical relevance of a query"""
@@ -347,7 +346,6 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         logger.debug("medical_relevance_tool_completed", is_medical=result.get('is_medical', False))
         return result
     
-    @tool
     @traceable(**get_traceable_config("AgenticOrchestratorAgent"))
     def analyze_query_characteristics_tool(self, query: str) -> QueryAnalysis:
         """Tool to analyze query characteristics and return structured output"""
@@ -509,21 +507,32 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             logger.warning("vector_search_blocked_non_medical")
             return self.handle_non_medical_query(state)
 
-        # Use real AgenticVectorRAGAgent if available, otherwise use simulation
+        # Use real AgenticVectorRAGAgent with adaptive search capabilities
         if self.vector_agent:
             try:
-                logger.info("using_real_vector_agent_with_hybrid_search")
-                vector_result = self.vector_agent.search_vectors(state["query"])
-                state["vector_results"] = vector_result.dict()
-                logger.info("real_vector_search_completed", 
-                           total_found=vector_result.total_found,
-                           strategy=vector_result.search_strategy)
+                logger.info("using_real_vector_agent_with_adaptive_search")
+                # Use adaptive search method that adjusts parameters based on query complexity
+                state = self.vector_agent.search_with_adaptation(state)
+                vector_results = state.get("vector_results", {})
+                logger.info("real_adaptive_vector_search_completed", 
+                           total_found=vector_results.get("total_found", 0),
+                           strategy=vector_results.get("search_strategy", "unknown"))
             except Exception as e:
-                logger.error("real_vector_search_failed", error=str(e))
-                state = self._simulate_vector_search(state)
+                logger.error("real_adaptive_vector_search_failed", error=str(e))
+                # Return empty results instead of simulation
+                state["vector_results"] = {
+                    "documents": [],
+                    "total_found": 0,
+                    "search_strategy": "error"
+                }
         else:
-            logger.warning("vector_agent_not_available_using_simulation")
-            state = self._simulate_vector_search(state)
+            logger.error("vector_agent_not_available")
+            # Return empty results instead of simulation
+            state["vector_results"] = {
+                "documents": [],
+                "total_found": 0,
+                "search_strategy": "agent_unavailable"
+            }
         
         logger.info("vector_search_route_completed")
         return state
@@ -540,20 +549,32 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             logger.warning("graph_search_blocked_non_medical")
             return self.handle_non_medical_query(state)
         
-        # Use real AgenticGraphRAGAgent if available, otherwise use simulation
+        # Use real AgenticGraphRAGAgent with optimization capabilities
         if self.graph_agent:
             try:
-                logger.info("using_real_graph_agent")
-                graph_result = self.graph_agent.search_graph(state)
-                state["graph_results"] = graph_result.dict()
-                logger.info("real_graph_search_completed", 
-                           total_found=graph_result.total_found)
+                logger.info("using_real_graph_agent_with_optimization")
+                # Use optimization search method that learns and adapts
+                state = self.graph_agent.search_with_optimization(state)
+                graph_results = state.get("graph_results", {})
+                logger.info("real_optimized_graph_search_completed", 
+                           total_found=graph_results.get("total_found", 0),
+                           optimizations_applied=graph_results.get("optimizations_applied", 0))
             except Exception as e:
-                logger.error("real_graph_search_failed", error=str(e))
-                state = self._simulate_graph_search(state)
+                logger.error("real_optimized_graph_search_failed", error=str(e))
+                # Return empty results instead of simulation
+                state["graph_results"] = {
+                    "documents": [],
+                    "total_found": 0,
+                    "optimizations_applied": 0
+                }
         else:
-            logger.warning("graph_agent_not_available_using_simulation")
-            state = self._simulate_graph_search(state)
+            logger.error("graph_agent_not_available")
+            # Return empty results instead of simulation  
+            state["graph_results"] = {
+                "documents": [],
+                "total_found": 0,
+                "optimizations_applied": 0
+            }
         
         logger.info("graph_search_route_completed")
         return state
@@ -570,40 +591,58 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             logger.warning("both_searches_blocked_non_medical")
             return self.handle_non_medical_query(state)
         
-        # Execute both searches
-        state = self._simulate_vector_search(state)
-        state = self._simulate_graph_search(state)
+        # Execute both searches using REAL adaptive agents
+        if self.vector_agent:
+            # Use the adaptive search method that adjusts parameters based on query complexity
+            try:
+                logger.info("using_adaptive_vector_search_in_both_mode")
+                state = self.vector_agent.search_with_adaptation(state)
+                vector_results = state.get("vector_results", {})
+                logger.info("real_adaptive_vector_search_completed", 
+                           total_found=vector_results.get("total_found", 0),
+                           strategy=vector_results.get("search_strategy", "unknown"))
+            except Exception as e:
+                logger.error("real_adaptive_vector_search_failed", error=str(e))
+                # Return empty results instead of simulation
+                state["vector_results"] = {
+                    "documents": [],
+                    "total_found": 0,
+                    "search_strategy": "error"
+                }
+        else:
+            # Return empty results instead of simulation
+            state["vector_results"] = {
+                "documents": [],
+                "total_found": 0,
+                "search_strategy": "agent_unavailable"
+            }
+            
+        if self.graph_agent:
+            # Use optimization search method that learns and adapts
+            try:
+                logger.info("using_optimized_graph_search_in_both_mode")
+                state = self.graph_agent.search_with_optimization(state)
+                graph_results = state.get("graph_results", {})
+                logger.info("real_optimized_graph_search_completed", 
+                           total_found=graph_results.get("total_found", 0),
+                           optimizations_applied=graph_results.get("optimizations_applied", 0))
+            except Exception as e:
+                logger.error("real_optimized_graph_search_failed", error=str(e))
+                # Return empty results instead of simulation
+                state["graph_results"] = {
+                    "documents": [],
+                    "total_found": 0,
+                    "optimizations_applied": 0
+                }
+        else:
+            # Return empty results instead of simulation
+            state["graph_results"] = {
+                "documents": [],
+                "total_found": 0,
+                "optimizations_applied": 0
+            }
+            
         logger.info("both_searches_route_completed")
-        return state
-    
-    def _simulate_vector_search(self, state: WorkflowState) -> WorkflowState:
-        """Simulate vector search for demonstration"""
-        logger.debug("simulating_vector_search")
-        
-        state["vector_results"] = {
-            "documents": [
-                {"content": f"Vector search result for: {state['query']}", "score": 0.85},
-                {"content": f"Related medical information for: {state['query']}", "score": 0.75}
-            ],
-            "total_found": 2
-        }
-        
-        logger.debug("vector_search_simulation_completed", documents_found=2)
-        return state
-    
-    def _simulate_graph_search(self, state: WorkflowState) -> WorkflowState:
-        """Simulate graph search for demonstration"""
-        logger.debug("simulating_graph_search")
-        
-        state["graph_results"] = {
-            "documents": [
-                {"content": f"Graph relationship data for: {state['query']}", "score": 0.80},
-                {"content": f"Connected medical entities for: {state['query']}", "score": 0.70}
-            ],
-            "total_found": 2
-        }
-        
-        logger.debug("graph_search_simulation_completed", documents_found=2)
         return state
     
     def _learn_from_execution(self, analysis: Dict, plan: SimpleReasoningPlan, state: WorkflowState):
@@ -787,7 +826,6 @@ class AgenticVectorRAGAgent(SecureAgentBase):
         
         return self.bm25_retriever
     
-    @tool
     @traceable(**get_traceable_config("AgenticVectorRAGAgent"))
     def search_with_adaptation(self, state: WorkflowState) -> WorkflowState:
         """Enhanced search with simple parameter adaptation"""
@@ -894,7 +932,7 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                 except Exception as e:
                     logger.warning("bm25_search_failed", error=str(e))
             
-            # Check if we have any real database results (not simulation)
+            # Check if we have any real database results
             if vector_docs or bm25_docs:
                 combined_docs = _merge_search_results(vector_docs, bm25_docs)
                 
@@ -1032,7 +1070,6 @@ class AgenticGraphRAGAgent(SecureAgentBase):
         self.query_optimizations = 0
         logger.info("agentic_graph_agent_initialized", initial_optimizations=0)
     
-    @tool
     @traceable(**get_traceable_config("AgenticGraphRAGAgent"))
     def search_with_optimization(self, state: WorkflowState) -> WorkflowState:
         """Enhanced search with simple query optimization learning"""
@@ -1056,16 +1093,14 @@ class AgenticGraphRAGAgent(SecureAgentBase):
     
     @traceable(**get_traceable_config("AgenticGraphRAGAgent"))
     def search_graph(self, state: WorkflowState) -> GraphSearchResult:
-        """Simplified graph search implementation with structured output"""
+        """Graph search implementation - returns empty results as simulation removed"""
         logger.debug("graph_search_started", 
                     optimization_count=self.query_optimizations)
         
         try:
-            # Simulate graph search results with proper structure
-            documents = [
-                {"content": f"Graph relationship data for: {state['query']}", "score": 0.80},
-                {"content": f"Connected medical entities for: {state['query']}", "score": 0.70}
-            ]
+            # Real graph search would be implemented here
+            # For now, return empty results as simulation is removed
+            documents = []
             
             result = GraphSearchResult(
                 documents=documents,
@@ -1173,13 +1208,13 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
             if search_strategy == "no_data_found":
                 logger.info("medical_query_no_database_results", query=query)
                 return SynthesisResult(
-                    answer="No data found in the medical database for your query. The requested medical information is not available in our current dataset.",
+                    answer="No data found in our medical database for this query.",
                     confidence=0.0,
                     sources=[]
                 )
             else:
                 return SynthesisResult(
-                    answer="I couldn't find relevant information to answer your question.",
+                    answer="No data found in our medical database for this query.",
                     confidence=0.0,
                     sources=[]
                 )
@@ -1208,7 +1243,7 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
         if not context_pieces:
             logger.warning("synthesis_no_valid_content")
             return SynthesisResult(
-                answer="The retrieved information could not be processed properly.",
+                answer="No data found in our medical database for this query.",
                 confidence=0.0,
                 sources=[]
             )
@@ -1216,22 +1251,28 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
         # Create comprehensive context
         combined_context = "\n\n".join(context_pieces)
         
-        # Enhanced synthesis prompt template
-        synthesis_prompt = f"""You are a medical AI assistant. Based on the provided context, please answer the user's question comprehensively and accurately.
+        # DEBUG: Log the context being provided
+        logger.info("DEBUG_CONTEXT_PROVIDED", 
+                   context_length=len(combined_context),
+                   context_pieces_count=len(context_pieces),
+                   context_preview=combined_context[:500] + "..." if len(combined_context) > 500 else combined_context)
+        
+        # Enhanced synthesis prompt template with balanced approach
+        synthesis_prompt = f"""You are a medical database assistant. Your job is to answer based on the provided context from our medical database.
 
 User Question: {query}
 
-Context Information:
+Context Information from Database:
 {combined_context}
 
-Instructions:
-1. Provide a comprehensive answer based ONLY on the information in the context
-2. If the context doesn't contain sufficient information, state that clearly
-3. Use a professional, medical tone appropriate for healthcare information
-4. Structure your response clearly with main points
-5. Do not make assumptions beyond what's provided in the context
+INSTRUCTIONS:
+1. Answer using the information from the provided context
+2. If the context contains relevant information, provide a comprehensive answer based on that data
+3. If the context doesn't contain sufficient information about the query, respond with: "No data found in our medical database for this query."
+4. Do not add external medical knowledge not present in the context
+5. You may use the phrase "Based on the provided information" or "According to the database context"
 
-Answer:"""
+Database Response:"""
 
         try:
             # Use LLM to generate comprehensive answer
@@ -1252,8 +1293,50 @@ Answer:"""
             # Ensure we have a string and clean it
             synthesized_answer = str(synthesized_answer).strip() if synthesized_answer else "Unable to generate answer"
             
-            # Calculate confidence based on context quality and length
-            confidence_score = min(0.95, 0.6 + (len(context_pieces) * 0.1) + (min(len(synthesized_answer), 500) / 1000))
+            # DEBUG: Log the actual LLM response
+            logger.info("DEBUG_LLM_RESPONSE", 
+                       raw_answer=synthesized_answer,
+                       answer_length=len(synthesized_answer))
+            
+            # Check if LLM provided external knowledge instead of database-only response
+            external_knowledge_indicators = [
+                "in general", "typically", "usually", "commonly",
+                "generally speaking", "broadly", "it is known that",
+                "medical literature", "consult", "recommend", "suggest",
+                "without specific details", "cannot elaborate further",
+                "multiple potential causes", "complex group of diseases",
+                "based on common medical knowledge", "as is well known"
+            ]
+            
+            answer_lower = synthesized_answer.lower()
+            has_external_knowledge = any(indicator in answer_lower for indicator in external_knowledge_indicators)
+            
+            # Check if the answer contains database context references (indicating it's using provided data)
+            database_indicators = [
+                "source", "context", "provided", "information", "database",
+                "available data", "according to", "based on the", "from the"
+            ]
+            has_database_content = any(indicator in answer_lower for indicator in database_indicators)
+            
+            # Only override if it has external knowledge AND doesn't reference database content
+            # AND the answer suggests general knowledge instead of database-specific info
+            should_override = (
+                has_external_knowledge and 
+                not has_database_content and 
+                ("context" not in answer_lower or "provided" not in answer_lower) and
+                len(synthesized_answer) < 100
+            )
+            
+            if should_override:
+                logger.warning("llm_provided_external_knowledge_overriding", 
+                             external_knowledge_detected=has_external_knowledge,
+                             has_database_content=has_database_content,
+                             answer_length=len(synthesized_answer))
+                synthesized_answer = "No data found in our medical database for this query."
+                confidence_score = 0.0
+            else:
+                # Calculate confidence based on context quality and length
+                confidence_score = min(0.95, 0.6 + (len(context_pieces) * 0.1) + (min(len(synthesized_answer), 500) / 1000))
             
             # Convert sources to strings as required by SynthesisResult model
             sources_strings = []
@@ -1320,38 +1403,6 @@ class SimpleAgenticWorkflow:
         
         logger.info("simple_agentic_workflow_initialized", execution_count=0)
     
-    def _execute_vector_search_simple(self, state: WorkflowState) -> WorkflowState:
-        """Simple vector search simulation"""
-        logger.info("executing_simple_vector_search")
-        
-        # Simple vector search simulation
-        state["vector_results"] = {
-            "documents": [
-                {"content": f"The NIH Chest X-ray dataset is a large collection of chest radiographs used for medical AI research. It contains over 100,000 frontal-view X-ray images from more than 30,000 unique patients with disease labels.", "score": 0.85},
-                {"content": f"NIH stands for National Institutes of Health. The NIH Chest X-ray dataset is commonly used for training machine learning models to detect various chest pathologies including pneumonia, atelectasis, and other conditions.", "score": 0.75}
-            ],
-            "total_found": 2
-        }
-        
-        logger.info("simple_vector_search_completed", documents_found=2)
-        return state
-    
-    def _execute_graph_search_simple(self, state: WorkflowState) -> WorkflowState:
-        """Simple graph search simulation"""
-        logger.info("executing_simple_graph_search")
-        
-        # Simple graph search simulation
-        state["graph_results"] = {
-            "documents": [
-                {"content": f"Related medical entities: chest radiography, medical imaging, diagnostic imaging, pulmonary diseases, thoracic imaging", "score": 0.80},
-                {"content": f"Connected research topics: computer-aided diagnosis, deep learning in radiology, medical image analysis, healthcare AI", "score": 0.70}
-            ],
-            "total_found": 2
-        }
-        
-        logger.info("simple_graph_search_completed", documents_found=2)
-        return state
-    
     def process_query(self, query: str) -> Dict[str, Any]:
         """
         MAIN AGENTIC PROCESSING PIPELINE
@@ -1385,7 +1436,9 @@ class SimpleAgenticWorkflow:
                 logger.info("non_medical_query_completed", execution_time=execution_time)
                 return {
                     "answer": state.get("final_answer"),
+                    "final_answer": state.get("final_answer"),  # Add both keys for compatibility
                     "sources": state.get("sources", []),
+                    "confidence_score": 0.0,  # Add confidence_score for consistency
                     "reasoning_plan": state.get("reasoning_plan", {}),
                     "execution_metrics": {
                         "execution_time": execution_time,
@@ -1440,7 +1493,9 @@ class SimpleAgenticWorkflow:
             # Prepare agentic response
             return {
                 "answer": state.get("final_answer", "No answer generated"),
+                "final_answer": state.get("final_answer", "No answer generated"),  # Add both keys for compatibility
                 "sources": state.get("sources", []),
+                "confidence_score": state.get("confidence_score", 0.0),  # Add confidence_score for Streamlit
                 "reasoning_plan": state.get("reasoning_plan", {}),
                 "learning_update": state.get("learning_update", {}),
                 "execution_metrics": {
@@ -1458,7 +1513,9 @@ class SimpleAgenticWorkflow:
             logger.error("agentic_query_processing_failed", error=str(e))
             return {
                 "answer": f"Error during agentic processing: {str(e)}",
+                "final_answer": f"Error during agentic processing: {str(e)}",  # Add both keys for compatibility
                 "sources": [],
+                "confidence_score": 0.0,  # Add confidence_score for consistency
                 "error": True,
                 "execution_metrics": {
                     "execution_time": (datetime.now() - start_time).total_seconds(),

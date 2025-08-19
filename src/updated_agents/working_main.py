@@ -34,7 +34,7 @@ def main():
     print("=" * 80)
     
     # Test query
-    test_query = "What is NIH Chest X-ray?"
+    test_query = "What is cause of cancer?"
     
     try:
         # Import required components

@@ -106,41 +106,6 @@ def main():
                             st.subheader("📝 Answer")
                             final_answer = result.get('final_answer', 'No answer generated')
                             st.write(final_answer)
-                            
-                            # Show confidence score and sources
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                confidence = result.get('confidence_score', 0.0)
-                                st.metric("Confidence Score", f"{confidence:.2f}")
-                            with col2:
-                                sources = result.get('sources', [])
-                                st.metric("Sources Found", len(sources))
-                            
-                            # Show sources if available
-                            if sources:
-                                st.subheader("📚 Sources")
-                                for i, source in enumerate(sources[:5], 1):
-                                    st.write(f"{i}. {source}")
-                            
-                            # Show agentic indicators
-                            agentic_indicators = result.get('agentic_indicators', {})
-                            if agentic_indicators:
-                                st.subheader("🤖 Agentic Capabilities Used")
-                                for capability, used in agentic_indicators.items():
-                                    icon = "✅" if used else "❌"
-                                    readable_name = capability.replace('_', ' ').title()
-                                    st.write(f"{icon} {readable_name}")
-                            
-                            # Show execution metrics if available
-                            metrics = result.get('execution_metrics', {})
-                            if metrics:
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    exec_time = metrics.get('execution_time', 0)
-                                    st.metric("Execution Time", f"{exec_time:.2f}s")
-                                with col2:
-                                    exec_count = metrics.get('execution_count', 0)
-                                    st.metric("Total Queries", exec_count)
                     
                     except Exception as e:
                         st.error(f"❌ Processing Error: {str(e)}")
@@ -159,38 +124,6 @@ def main():
                     # Use query_params instead of deprecated experimental_set_query_params
                     st.query_params.update({"query": example})
                     st.rerun()
-        
-        # Sidebar status
-        with st.sidebar:
-            st.header("📊 System Status")
-            st.success("✅ Agentic System Active")
-            
-            # System health check
-            try:
-                status = app.get_system_status()
-                capabilities = status.get('agentic_capabilities', {})
-                
-                st.subheader("🎯 Capabilities")
-                for capability, active in capabilities.items():
-                    icon = "✅" if active else "❌" 
-                    readable_name = capability.replace('_', ' ').title()
-                    st.write(f"{icon} {readable_name}")
-                
-                # Learning status
-                st.subheader("📚 Learning Status")
-                try:
-                    insights = app.get_learning_insights()
-                    adaptations = insights.get('total_adaptations', 0)
-                    patterns = insights.get('learned_patterns', 0)
-                    
-                    st.metric("Adaptations", adaptations)
-                    st.metric("Patterns Learned", patterns)
-                    
-                except Exception:
-                    st.info("Learning data unavailable")
-                    
-            except Exception as e:
-                st.warning(f"Status check failed: {str(e)}")
     
     else:
         # Error state

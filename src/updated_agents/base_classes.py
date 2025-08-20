@@ -7,7 +7,7 @@ without any dependencies on the original agents folder.
 
 import os
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from enum import Enum
 from datetime import datetime
 from abc import ABC, abstractmethod
@@ -99,65 +99,194 @@ class SynthesisResult(BaseModel):
     sources: List[str] = Field(description="Source documents used")
     confidence: float = Field(description="Confidence in the answer")
 
-# Simple medical validation function
-def validate_medical_relevance(query: str) -> Dict[str, Any]:
-    """Simple medical relevance validation"""
+# LLM-driven medical validation function
+def validate_medical_relevance(query: str, llm) -> Dict[str, Any]:
+    """LLM-driven medical relevance validation using secure prompt template"""
     logger.info("medical_validation_started", query_length=len(query))
     
-    medical_keywords = [
-        'medical', 'health', 'disease', 'diagnosis', 'treatment', 'symptom',
-        'patient', 'doctor', 'hospital', 'medicine', 'drug', 'therapy',
-        'pneumonia', 'covid', 'xray', 'chest', 'lung', 'heart', 'cancer'
-    ]
+    # Import here to avoid circular imports
+    from core.input_sanitization import (
+        secure_llm_interaction,
+        MEDICAL_VALIDATION_TEMPLATE
+    )
     
-    query_lower = query.lower()
-    is_medical = any(keyword in query_lower for keyword in medical_keywords)
+    # Use secure LLM-driven validation
+    logger.info("using_llm_driven_medical_validation")
     
-    logger.debug("medical_keywords_check", 
-                keywords_found=[kw for kw in medical_keywords if kw in query_lower],
-                is_medical=is_medical)
+    # Use secure LLM interaction with template and user input
+    response = secure_llm_interaction(
+        llm=llm,
+        template=MEDICAL_VALIDATION_TEMPLATE,
+        user_input=query
+    )
     
-    if not is_medical:
-        logger.info("query_rejected_non_medical", query_snippet=query[:50])
-        return {
-            'is_medical': False,
-            'quick_response': "I can only help with medical and healthcare-related questions. Please ask about medical conditions, diagnoses, or healthcare topics."
-        }
+    # Parse LLM response
+    response_lower = response.lower().strip()
     
-    logger.info("query_accepted_medical", query_snippet=query[:50])
+    # Check for medical classification
+    is_medical = 'medical' in response_lower and 'non_medical' not in response_lower
+    
+    logger.debug("llm_medical_validation_result", 
+                is_medical=is_medical,
+                response_preview=response[:100])
+    
+    logger.info("query_accepted_medical_llm" if is_medical else "query_rejected_non_medical_llm", 
+               query_snippet=query[:50])
+    
     return {
-        'is_medical': True,
-        'quick_response': None
+        'is_medical': is_medical,
+        'quick_response': "I can only help with medical and healthcare-related questions. Please ask about medical conditions, diagnoses, or healthcare topics." if not is_medical else None,
+        'validation_method': 'llm_driven',
+        'llm_reasoning': response[:200]
     }
 
-# Simple query analysis function
-def analyze_query_characteristics(query: str) -> QueryAnalysis:
-    """Simple query characteristic analysis"""
-    logger.info("query_analysis_started", query_length=len(query))
+# Enhanced LLM-driven query analysis function
+def analyze_query_characteristics(query: str, llm=None) -> QueryAnalysis:
+    """Enhanced query characteristic analysis using LLM reasoning"""
+    logger.info("enhanced_query_analysis_started", query_length=len(query))
+    
+    # If no LLM provided, fall back to simple analysis
+    if llm is None:
+        return _simple_query_analysis(query)
+    
+    # Import here to avoid circular imports
+    from core.input_sanitization import secure_llm_interaction
+    
+    # Enhanced analysis template for intelligent query classification
+    analysis_template = """You are a medical database query analyzer. Analyze this query and classify its characteristics:
+
+QUERY: {user_query}
+
+Analyze the query for:
+
+1. INTENT - What is the user trying to accomplish?
+   - 'factual': Simple fact lookup or general medical information
+   - 'relational': Structured data queries involving patient demographics, findings, relationships
+   - 'analytical': Complex analysis, patterns, trends, statistics
+   - 'comparison': Comparing conditions, treatments, or demographics
+
+2. COMPLEXITY - How complex is the query?
+   - 'simple': Basic questions (under 10 words, single concept)
+   - 'complex': Multi-part questions, multiple criteria, aggregations
+
+3. DATABASE INDICATORS - Does this query suggest structured database operations?
+   Look for: counts, totals, demographics (age, gender), specific medical findings, exact criteria, filtering
+   
+4. RELATIONSHIPS - Does the query involve relationships between entities?
+   Patient-Finding relationships, demographic-medical correlations, etc.
+
+IMPORTANT: Queries asking for "total number", "count", specific demographics (age=17, male), 
+and specific medical findings (effusion) are RELATIONAL queries needing structured database access.
+
+Format your response as:
+INTENT: [factual|relational|analytical|comparison]
+COMPLEXITY: [simple|complex]  
+ENTITY_COUNT: [number of medical entities/concepts]
+HAS_RELATIONSHIPS: [true|false]
+REASONING: [brief explanation of classification]"""
+
+    try:
+        response = secure_llm_interaction(
+            llm=llm,
+            template=analysis_template,
+            user_input=query,
+            max_tokens=300,
+            temperature=0.1
+        )
+        
+        # Parse LLM response
+        intent = 'factual'
+        complexity = 'simple'
+        entity_count = 1
+        has_relationships = False
+        
+        lines = response.split('\n')
+        for line in lines:
+            line = line.strip().upper()
+            if line.startswith('INTENT:'):
+                intent_value = line.split('INTENT:')[1].strip().lower()
+                if intent_value in ['factual', 'relational', 'analytical', 'comparison']:
+                    intent = intent_value
+            elif line.startswith('COMPLEXITY:'):
+                complexity_value = line.split('COMPLEXITY:')[1].strip().lower()
+                if complexity_value in ['simple', 'complex']:
+                    complexity = complexity_value
+            elif line.startswith('ENTITY_COUNT:'):
+                try:
+                    entity_count = int(line.split('ENTITY_COUNT:')[1].strip())
+                except:
+                    entity_count = 1
+            elif line.startswith('HAS_RELATIONSHIPS:'):
+                rel_value = line.split('HAS_RELATIONSHIPS:')[1].strip().lower()
+                has_relationships = rel_value in ['true', 'yes', '1']
+        
+        # Additional logic for structured database queries
+        query_lower = query.lower()
+        if any(keyword in query_lower for keyword in [
+            'total number', 'count', 'how many', 'number of',
+            'age equals', 'age =', 'gender', 'male', 'female',
+            'finding label', 'finding', 'patient', 'diagnosis'
+        ]):
+            intent = 'relational'
+            has_relationships = True
+            
+        result = QueryAnalysis(
+            intent=intent,
+            complexity=complexity,
+            entity_count=max(entity_count, 1),
+            has_relationships=has_relationships
+        )
+        
+        logger.info("llm_query_analysis_completed", 
+                   intent=intent, 
+                   complexity=complexity, 
+                   entity_count=result.entity_count,
+                   has_relationships=has_relationships,
+                   llm_used=True)
+        
+        return result
+        
+    except Exception as e:
+        logger.warning("llm_query_analysis_failed", error=str(e))
+        return _simple_query_analysis(query)
+
+def _simple_query_analysis(query: str) -> QueryAnalysis:
+    """Fallback simple query analysis when LLM is not available"""
+    logger.info("simple_query_analysis_started", query_length=len(query))
     
     query_lower = query.lower()
     words = query.split()
     
-    # Determine intent
+    # Enhanced intent detection with database query patterns
     if any(word in query_lower for word in ['compare', 'versus', 'vs', 'difference']):
         intent = 'comparison'
     elif any(word in query_lower for word in ['relationship', 'correlation', 'association']):
         intent = 'relational'
     elif any(word in query_lower for word in ['analyze', 'pattern', 'trend', 'statistics']):
         intent = 'analytical'
+    # Enhanced detection for structured database queries
+    elif any(keyword in query_lower for keyword in [
+        'total number', 'count', 'how many', 'number of',
+        'age equals', 'age =', 'gender', 'male', 'female',
+        'finding label', 'finding', 'patient', 'diagnosis'
+    ]):
+        intent = 'relational'
     else:
         intent = 'factual'
     
     # Determine complexity
     complexity = 'complex' if len(words) > 15 else 'simple'
     
-    # Count entities (simple heuristic)
-    entity_indicators = ['patient', 'disease', 'condition', 'treatment', 'diagnosis']
+    # Count entities (enhanced heuristic)
+    entity_indicators = ['patient', 'disease', 'condition', 'treatment', 'diagnosis', 
+                        'finding', 'effusion', 'pneumonia', 'male', 'female', 'age']
     entity_count = sum(1 for indicator in entity_indicators if indicator in query_lower)
     
-    # Check for relationships
+    # Enhanced relationship detection
     relationship_words = ['relationship', 'correlation', 'association', 'compare', 'versus']
-    has_relationships = any(word in query_lower for word in relationship_words)
+    database_patterns = ['total number', 'count', 'age equals', 'finding label']
+    has_relationships = (any(word in query_lower for word in relationship_words) or 
+                        any(pattern in query_lower for pattern in database_patterns))
     
     result = QueryAnalysis(
         intent=intent,
@@ -166,11 +295,12 @@ def analyze_query_characteristics(query: str) -> QueryAnalysis:
         has_relationships=has_relationships
     )
     
-    logger.info("query_analysis_completed", 
+    logger.info("simple_query_analysis_completed", 
                intent=intent, 
                complexity=complexity, 
                entity_count=result.entity_count,
-               has_relationships=has_relationships)
+               has_relationships=has_relationships,
+               llm_used=False)
     
     return result
 
@@ -254,7 +384,7 @@ class SimpleToolRegistry:
         self.tools = {}
         logger.info("tool_registry_initialized")
     
-    def register_tool(self, name: str, func: callable, description: str = ""):
+    def register_tool(self, name: str, func: Callable, description: str = ""):
         """Register a tool function"""
         self.tools[name] = {
             'function': func,

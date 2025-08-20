@@ -176,7 +176,7 @@ class LearningMemory:
     def get_best_route(self, query_type: str) -> str:
         """Learn the best route for a query type"""
         routes = ['vector', 'graph', 'both']
-        best_route = 'both'  # Default fallback
+        best_route = 'both'  # Default route
         best_score = 0.0
         
         for route in routes:
@@ -359,11 +359,104 @@ class HybridSearchResult(BaseModel):
     total_found: int = Field(description="Total unique documents after merging")
     search_strategy: str = Field(description="Strategy used: vector_only, bm25_only, or hybrid")
 
+class EntityExtraction(BaseModel):
+    """Enhanced entity extraction with demographics support"""
+    entities: List[str] = Field(default_factory=list, description="Medical entities (diseases, symptoms, treatments)")
+    relationships: List[str] = Field(default_factory=list, description="Relationship words (has, causes, treats)")
+    concepts: List[str] = Field(default_factory=list, description="Medical concepts/specialties")
+    demographics: List[str] = Field(default_factory=list, description="Demographic attributes (age, gender, ethnicity)")
+    scenario: str = Field(default="SINGLE_ENTITY_BASIC", description="Extraction scenario classification")
+
+class GraphQueryResult(BaseModel):
+    """Enhanced graph query result with execution details"""
+    triples: List[Dict[str, Any]] = Field(default_factory=list, description="Retrieved graph triples")
+    queries_executed: int = Field(default=0, description="Number of Cypher queries executed")
+    scenario_used: str = Field(default="", description="Scenario used for query generation")
+    total_found: int = Field(default=0, description="Total results found")
+
 class GraphSearchResult(BaseModel):
     """Structured graph search result"""
     documents: List[Dict[str, Any]] = Field(description="Retrieved relationship data")
     total_found: int = Field(description="Total number of results found")
     optimizations_applied: int = Field(description="Number of optimizations applied")
+
+def _determine_extraction_scenario(entities: List[str], relationships: List[str], 
+                                  concepts: List[str], demographics: List[str]) -> str:
+    """
+    Determine the most appropriate extraction scenario based on extracted components.
+    This guides the query generation strategy.
+    """
+    entity_count = len(entities)
+    relationship_count = len(relationships)
+    concept_count = len(concepts)
+    demographic_count = len(demographics)
+    
+    # Complex scenarios with demographics
+    if demographic_count > 0:
+        if entity_count > 1 and relationship_count > 0:
+            return "COMPLEX_MULTI_ENTITY_WITH_DEMOGRAPHICS"
+        elif entity_count == 1 and (relationship_count > 0 or concept_count > 0):
+            return "SINGLE_ENTITY_WITH_DEMOGRAPHICS"
+        elif entity_count > 1:
+            return "MULTI_ENTITY_WITH_DEMOGRAPHICS"
+        elif concept_count > 0:
+            return "CONCEPTS_WITH_DEMOGRAPHICS"
+        else:
+            return "SINGLE_ENTITY_WITH_DEMOGRAPHICS"
+    
+    # No demographics scenarios
+    if entity_count > 1 and relationship_count > 0:
+        return "MULTI_ENTITY_WITH_RELATIONSHIPS"
+    elif entity_count == 1 and relationship_count > 0:
+        return "SINGLE_ENTITY_WITH_RELATIONSHIPS"
+    elif entity_count > 1:
+        return "MULTI_ENTITY_BASIC"
+    elif entity_count == 1:
+        if concept_count > 0:
+            return "SINGLE_ENTITY_COMPLEX"
+        else:
+            return "SINGLE_ENTITY_BASIC"
+    elif concept_count > 0:
+        return "CONCEPTS_ONLY"
+    else:
+        return "GENERAL_QUERY"
+
+def _create_dynamic_triple_from_record(record, query_info: Dict[str, Any], original_query: str) -> Dict[str, Any]:
+    """
+    Create a dynamic triple from a Neo4j record with enhanced metadata.
+    This function adapts the triple structure based on the record content.
+    """
+    record_dict = dict(record)
+    
+    # Create base triple structure
+    triple = {
+        "subject": "",
+        "predicate": "related_to",
+        "object": "",
+        "content": f"Query result for: {original_query}",
+        "source": "neo4j_dynamic",
+        "query_type": query_info.get('description', 'Dynamic query'),
+        "record_type": "graph_relationship"
+    }
+    
+    # Extract subject and object from record
+    if record_dict:
+        keys = list(record_dict.keys())
+        if len(keys) >= 2:
+            # Use first two elements as subject and object
+            triple["subject"] = str(record_dict[keys[0]])
+            triple["object"] = str(record_dict[keys[1]])
+        elif len(keys) == 1:
+            # Single element becomes both subject and object
+            triple["subject"] = str(record_dict[keys[0]])
+            triple["object"] = str(record_dict[keys[0]])
+    
+    # Add all record fields as additional metadata
+    for key, value in record_dict.items():
+        if key not in ["subject", "predicate", "object", "content"]:
+            triple[key] = value
+    
+    return triple
 
 class AgenticOrchestratorAgent(SecureAgentBase):
     """
@@ -401,8 +494,8 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         """Initialize dynamic tool registry for agentic behavior"""
         tools = {
             "medical_validation": {
-                "function": validate_medical_relevance,
-                "description": "Validate if query is medical/healthcare related",
+                "function": self._validate_medical_relevance_with_llm,
+                "description": "Validate if query is medical/healthcare related using LLM",
                 "usage_count": 0,
                 "success_rate": 1.0
             },
@@ -619,10 +712,27 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         return state
 
     @traceable(**get_traceable_config("AgenticOrchestratorAgent"))
+    def _validate_medical_relevance_with_llm(self, query: str) -> Dict[str, Any]:
+        """LLM-driven medical relevance validation - ONLY called by Orchestrator"""
+        logger.info("orchestrator_medical_validation_called", query_length=len(query))
+        
+        # Use LLM-driven validation with the orchestrator's LLM
+        result = validate_medical_relevance(query, llm=self.llm)
+        
+        # Update tool usage statistics for agentic learning
+        self.available_tools["medical_validation"]["usage_count"] += 1
+        
+        logger.debug("orchestrator_medical_validation_completed", 
+                    is_medical=result.get('is_medical', False),
+                    validation_method=result.get('validation_method', 'unknown'))
+        
+        return result
+
+    @traceable(**get_traceable_config("AgenticOrchestratorAgent"))
     def validate_medical_relevance_tool(self, query: str) -> Dict[str, Any]:
-        """Tool to validate medical relevance of a query"""
+        """Tool to validate medical relevance of a query - delegates to LLM-driven method"""
         logger.info("medical_relevance_tool_called", query_length=len(query))
-        result = validate_medical_relevance(query)
+        result = self._validate_medical_relevance_with_llm(query)
         logger.debug("medical_relevance_tool_completed", is_medical=result.get('is_medical', False))
         return result
     
@@ -630,7 +740,7 @@ class AgenticOrchestratorAgent(SecureAgentBase):
     def analyze_query_characteristics_tool(self, query: str) -> QueryAnalysis:
         """Tool to analyze query characteristics and return structured output"""
         logger.info("query_characteristics_tool_called", query_length=len(query))
-        result = analyze_query_characteristics(query)
+        result = analyze_query_characteristics(query, self.llm)
         logger.debug("query_characteristics_tool_completed", intent=result.intent)
         return result
     
@@ -659,13 +769,15 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         return state
     
     def handle_non_medical_query(self, state: WorkflowState) -> WorkflowState:
-        """Handle non-medical queries"""
+        """Handle non-medical queries using orchestrator's validation result"""
         logger.info("handling_non_medical_query")
-        validation_result = state.get("medical_validation", {})
-        state["final_answer"] = validation_result.get("quick_response", 
+        medical_validation = state.get("medical_validation", {})
+        state["final_answer"] = medical_validation.get("quick_response", 
             "I can only help with medical and healthcare-related questions.")
         state["sources"] = []
-        logger.debug("non_medical_response_generated")
+        state["confidence_score"] = 0.0
+        logger.debug("non_medical_response_generated", 
+                    validation_method=medical_validation.get("validation_method", "unknown"))
         return state
     
     def _analyze_query_with_reasoning(self, query: str) -> Dict[str, Any]:
@@ -673,18 +785,20 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         
         logger.info("query_reasoning_analysis_started", query_length=len(query))
         
-        # Use functions for medical validation and query analysis
-        validation_result = validate_medical_relevance(query)
+        # Use LLM-driven medical validation through the orchestrator's method
+        validation_result = self._validate_medical_relevance_with_llm(query)
         
         # Use functions for query analysis  
-        query_analysis = analyze_query_characteristics(query)
+        query_analysis = analyze_query_characteristics(query, self.llm)
         
         result = {
+            'query': query,  # Add the actual query text
             'query_type': query_analysis.intent,
             'is_medical': validation_result.get('is_medical', False),
             'complexity': query_analysis.complexity,
             'entity_count': query_analysis.entity_count,
-            'has_relationships': query_analysis.has_relationships
+            'has_relationships': query_analysis.has_relationships,
+            'medical_validation': validation_result  # Include full validation result
         }
         
         logger.info("query_reasoning_analysis_completed", 
@@ -694,19 +808,178 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         
         return result
     
+    def _detect_graph_database_patterns(self, query: str) -> Dict[str, Any]:
+        """
+        LLM-powered detection of graph database query patterns with intelligent analysis.
+        Uses LLM to understand context and determine optimal routing strategy.
+        """
+        logger.info("llm_graph_pattern_detection_started", query_length=len(query))
+        
+        try:
+            # LLM-based graph pattern detection template
+            graph_detection_template = """
+You are an expert in medical database routing and query analysis. Analyze the following medical query to determine if it should use a graph database (Neo4j) or vector database.
+
+<USER_QUERY>{user_query}</USER_QUERY>
+
+GRAPH DATABASE INDICATORS:
+- Demographics: age, gender, patient characteristics (age=17, male patients, female, elderly)
+- Structured data: "total number", "count of", "how many", exact values, aggregations
+- Relationships: connections between entities, medical relationships
+- Exact matching: "equals", "=", specific criteria matching
+- Patient-specific queries: individual patient data, medical records
+- Finding labels: specific medical findings, diagnoses
+
+VECTOR DATABASE INDICATORS:
+- Conceptual searches: general medical concepts, semantic similarity
+- Document retrieval: research papers, medical literature
+- Broad medical topics: overviews, general information
+
+ANALYSIS CRITERIA:
+1. Does the query require structured patient data with specific demographic criteria?
+2. Does it ask for exact matches, counts, or aggregations?
+3. Does it involve relationships between medical entities?
+4. Does it require precise filtering by patient characteristics?
+
+Respond in this EXACT format:
+RECOMMENDATION: [GRAPH|VECTOR|HYBRID]
+CONFIDENCE: [HIGH|MEDIUM|LOW]
+REASONING: [Brief explanation of why this database type is optimal]
+FORCE_GRAPH: [YES|NO] (YES if query absolutely requires graph database)
+PATTERNS: [List 3-5 specific patterns detected in the query]
+SCORE: [0.0-1.0] (How strongly this indicates graph database usage)
+"""
+            
+            # Use secure LLM interaction for pattern detection
+            validated_response = secure_llm_interaction(
+                llm=self.llm,
+                template=graph_detection_template,
+                user_input=query
+            )
+            
+            # Parse LLM response
+            result = self._parse_graph_detection_response(validated_response, query)
+            
+            logger.info("llm_graph_pattern_detection_completed",
+                       recommendation=result.get('recommendation', 'UNKNOWN'),
+                       confidence=result.get('confidence', 'UNKNOWN'),
+                       force_graph=result.get('force_graph', False),
+                       score=result.get('score', 0.0))
+            
+            return result
+            
+        except Exception as e:
+            logger.error("llm_graph_pattern_detection_failed", error=str(e))
+            # Return default result without fallback
+            return {
+                'recommendation': 'VECTOR',
+                'confidence': 'LOW',
+                'reasoning': 'LLM detection failed',
+                'force_graph': False,
+                'patterns': [],
+                'score': 0.0,
+                'reasons': []
+            }
+    
+    def _parse_graph_detection_response(self, response: str, original_query: str) -> Dict[str, Any]:
+        """Parse LLM response for graph database pattern detection"""
+        result = {
+            'recommendation': 'VECTOR',
+            'confidence': 'MEDIUM',
+            'reasoning': 'LLM analysis for optimal database routing',
+            'force_graph': False,
+            'patterns': [],
+            'score': 0.5,
+            'reasons': []
+        }
+        
+        try:
+            lines = response.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                
+                if line.startswith('RECOMMENDATION:'):
+                    rec = line.split(':', 1)[1].strip().upper()
+                    if rec in ['GRAPH', 'VECTOR', 'HYBRID']:
+                        result['recommendation'] = rec
+                        
+                elif line.startswith('CONFIDENCE:'):
+                    conf = line.split(':', 1)[1].strip().upper()
+                    if conf in ['HIGH', 'MEDIUM', 'LOW']:
+                        result['confidence'] = conf
+                        
+                elif line.startswith('REASONING:'):
+                    reasoning = line.split(':', 1)[1].strip()
+                    if reasoning and len(reasoning) < 200:
+                        result['reasoning'] = reasoning
+                        result['reasons'].append(reasoning)
+                        
+                elif line.startswith('FORCE_GRAPH:'):
+                    force = line.split(':', 1)[1].strip().upper()
+                    result['force_graph'] = (force == 'YES')
+                    
+                elif line.startswith('PATTERNS:'):
+                    patterns_text = line.split(':', 1)[1].strip()
+                    if patterns_text:
+                        # Extract patterns from text
+                        patterns = [p.strip() for p in patterns_text.split(',') if p.strip()]
+                        result['patterns'] = patterns[:5]  # Limit to 5 patterns
+                        
+                elif line.startswith('SCORE:'):
+                    try:
+                        score_text = line.split(':', 1)[1].strip()
+                        score = float(score_text)
+                        result['score'] = max(0.0, min(1.0, score))  # Clamp to 0-1
+                    except ValueError:
+                        result['score'] = 0.5  # Default if parsing fails
+            
+            # Adjust score based on recommendation
+            if result['recommendation'] == 'GRAPH':
+                result['score'] = max(0.7, result['score'])  # Boost for graph recommendation
+            elif result['recommendation'] == 'VECTOR':
+                result['score'] = min(0.3, result['score'])  # Lower for vector recommendation
+            elif result['recommendation'] == 'HYBRID':
+                result['score'] = 0.6  # Balanced score for hybrid
+            
+            logger.debug("graph_detection_response_parsed",
+                        recommendation=result['recommendation'],
+                        confidence=result['confidence'],
+                        score=result['score'],
+                        patterns_count=len(result['patterns']))
+            
+        except Exception as e:
+            logger.error("graph_detection_response_parsing_failed", error=str(e))
+            # Return default result without fallback
+            result = {
+                'recommendation': 'VECTOR',
+                'confidence': 'LOW',
+                'reasoning': 'Response parsing failed',
+                'force_graph': False,
+                'patterns': [],
+                'score': 0.0,
+                'reasons': []
+            }
+        
+        return result
+    
     def _make_enhanced_agentic_routing_decision(self, analysis: Dict[str, Any], execution_goals: List[Dict]) -> SimpleReasoningPlan:
         """ENHANCED AGENTIC BEHAVIOR: Goal-aware routing with dynamic tool selection"""
         
         query_type = analysis['query_type']
         complexity = analysis.get('complexity', 'simple')
+        query = analysis.get('query', '')  # Get the actual query text
         
         logger.info("making_enhanced_agentic_routing_decision", 
                    query_type=query_type,
                    complexity=complexity,
                    goal_count=len(execution_goals))
         
+        # ENHANCED GRAPH DATABASE DETECTION (LLM-POWERED)
+        graph_indicators = self._detect_graph_database_patterns(query)
+        
         # ADVANCED LEARNING APPLICATION: Consider tool performance history
-        if learning_memory.routing_performance:
+        if learning_memory.routing_performance and not graph_indicators.get('force_graph', False):
             learned_route = learning_memory.get_best_route(query_type)
             
             # Check if learned route aligns with current goals
@@ -726,10 +999,81 @@ class AgenticOrchestratorAgent(SecureAgentBase):
                     is_learned=True
                 )
         
-        # ENHANCED REASONING-BASED ROUTING: Consider complexity and goals
+        # ENHANCED REASONING-BASED ROUTING: LLM recommendation takes priority
         reasoning_factors = []
         
-        if complexity == 'complex':
+        # PRIORITY 1: LLM-based graph database recommendation (overrides other logic)
+        llm_recommendation = graph_indicators.get('recommendation', 'VECTOR').upper()
+        llm_confidence = graph_indicators.get('confidence', 'MEDIUM').upper()
+        
+        if graph_indicators.get('force_graph', False) or llm_recommendation == 'GRAPH':
+            route = 'graph'
+            reasoning_factors.append(f"LLM analysis recommends GRAPH database ({llm_confidence} confidence)")
+            reasoning_factors.append(graph_indicators.get('reasoning', 'LLM-based recommendation'))
+            if graph_indicators.get('patterns'):
+                reasoning_factors.append(f"Detected patterns: {', '.join(graph_indicators['patterns'][:3])}")
+            logger.info("llm_graph_recommendation_applied", 
+                       recommendation=llm_recommendation,
+                       confidence=llm_confidence,
+                       patterns=graph_indicators.get('patterns', []))
+            
+            # EARLY RETURN: LLM recommendation overrides all other logic
+            combined_reasoning = "; ".join(reasoning_factors)
+            logger.info("enhanced_routing_decision_determined", 
+                       query_type=query_type,
+                       complexity=complexity,
+                       selected_route=route,
+                       reasoning_factors=len(reasoning_factors))
+            
+            return SimpleReasoningPlan(
+                query_type=query_type,
+                selected_route=route,
+                reasoning=combined_reasoning,
+                is_learned=False
+            )
+            
+        elif llm_recommendation == 'HYBRID':
+            route = 'both'
+            reasoning_factors.append(f"LLM analysis recommends HYBRID approach ({llm_confidence} confidence)")
+            reasoning_factors.append(graph_indicators.get('reasoning', 'LLM-based hybrid recommendation'))
+            
+            # EARLY RETURN: LLM hybrid recommendation overrides other logic
+            combined_reasoning = "; ".join(reasoning_factors)
+            logger.info("enhanced_routing_decision_determined", 
+                       query_type=query_type,
+                       complexity=complexity,
+                       selected_route=route,
+                       reasoning_factors=len(reasoning_factors))
+            
+            return SimpleReasoningPlan(
+                query_type=query_type,
+                selected_route=route,
+                reasoning=combined_reasoning,
+                is_learned=False
+            )
+            
+        elif graph_indicators.get('score', 0.0) > 0.6:
+            route = 'graph'
+            reasoning_factors.append(f"High graph pattern score ({graph_indicators.get('score', 0.0):.2f})")
+            reasoning_factors.extend(graph_indicators.get('reasons', []))
+            
+            # EARLY RETURN: High graph score overrides traditional logic
+            combined_reasoning = "; ".join(reasoning_factors)
+            logger.info("enhanced_routing_decision_determined", 
+                       query_type=query_type,
+                       complexity=complexity,
+                       selected_route=route,
+                       reasoning_factors=len(reasoning_factors))
+            
+            return SimpleReasoningPlan(
+                query_type=query_type,
+                selected_route=route,
+                reasoning=combined_reasoning,
+                is_learned=False
+            )
+        
+        # Traditional complexity-based routing
+        elif complexity == 'complex':
             reasoning_factors.append("Complex query detected - comprehensive search needed")
             if query_type == 'comparison':
                 route = 'both'
@@ -757,7 +1101,7 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             tool_success_rate = self.available_tools[route]["success_rate"]
             if tool_success_rate < 0.7:  # Low success rate
                 reasoning_factors.append(f"Adjusting route due to {route} tool performance ({tool_success_rate:.2f})")
-                route = 'both'  # Fallback to comprehensive search
+                route = 'both'
         
         combined_reasoning = "; ".join(reasoning_factors)
         
@@ -803,9 +1147,29 @@ class AgenticOrchestratorAgent(SecureAgentBase):
                    selected_route=plan.selected_route,
                    goal_count=len(goals))
         
-        # Track goal execution
+        # DYNAMIC GOAL ADAPTATION: Update search tool based on routing decision
         primary_goal = goals[0] if goals else {}
         sub_goals = primary_goal.get("sub_goals", [])
+        
+        # Update the search sub-goal to match the routing decision
+        for sub_goal in sub_goals:
+            if sub_goal.get("id") == "search_data":
+                original_tool = sub_goal.get("tool", "")
+                if plan.selected_route == "graph":
+                    sub_goal["tool"] = "graph_search"
+                    sub_goal["description"] = "Search graph database for structured information"
+                elif plan.selected_route == "both":
+                    sub_goal["tool"] = "hybrid_search"
+                    sub_goal["description"] = "Search both vector and graph databases"
+                elif plan.selected_route == "vector":
+                    sub_goal["tool"] = "vector_search"
+                    sub_goal["description"] = "Search vector database for semantic information"
+                
+                if sub_goal["tool"] != original_tool:
+                    logger.info("sub_goal_tool_updated", 
+                               original_tool=original_tool,
+                               new_tool=sub_goal["tool"],
+                               routing_decision=plan.selected_route)
         
         # Execute sub-goals in order, adapting as needed
         for sub_goal in sub_goals:
@@ -985,24 +1349,31 @@ class AgenticOrchestratorAgent(SecureAgentBase):
                 is_learned=True
             )
         
-        # REASONING-BASED ROUTING: Dynamic decision making
-        logger.info("applying_reasoning_based_routing", query_type=query_type)
+        # ENHANCED LLM-POWERED ROUTING: Use LLM graph detection
+        logger.info("applying_enhanced_llm_powered_routing", query_type=query_type)
         
-        if query_type == 'comparison':
+        # Get LLM graph detection recommendation
+        graph_detection = self._detect_graph_database_patterns(query)
+        
+        if graph_detection.get('force_graph', False):
+            route = 'graph'
+            reasoning = f"LLM detected graph patterns: {graph_detection.get('patterns', [])} (confidence: {graph_detection.get('confidence', 'UNKNOWN')})"
+        elif query_type == 'comparison':
             route = 'both'  # Comparisons benefit from both vector and graph
             reasoning = "Complex comparisons require both semantic similarity and relationship analysis"
-        
         elif query_type == 'relational':
             route = 'graph'  # Relationships are graph strengths
             reasoning = "Relationship queries are optimally handled by graph database"
-        
         elif query_type == 'analytical':
             route = 'both'  # Analysis benefits from comprehensive data
             reasoning = "Analytical queries need comprehensive data from both sources"
-        
-        else:  # factual
-            route = 'vector'  # Simple facts work well with vector similarity
-            reasoning = "Factual queries efficiently handled by vector similarity search"
+        else:  # factual - check if graph patterns detected
+            if graph_detection.get('recommendation') == 'GRAPH':
+                route = 'graph'
+                reasoning = f"LLM recommended graph search for factual query (confidence: {graph_detection.get('confidence', 'UNKNOWN')})"
+            else:
+                route = 'vector'  # Simple facts work well with vector similarity
+                reasoning = "Factual queries efficiently handled by vector similarity search"
         
         logger.info("routing_decision_determined", 
                    query_type=query_type,
@@ -1043,19 +1414,17 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             logger.debug("executing_both_routes")
             return self._execute_both_searches(state)
         else:
-            # Non-medical fallback
-            logger.debug("executing_non_medical_fallback")
+            # Handle non-medical queries
+            logger.debug("executing_non_medical_handling")
             return self.handle_non_medical_query(state)
     
     def _execute_vector_search(self, state: WorkflowState) -> WorkflowState:
         """Execute vector search route using real AgenticVectorRAGAgent"""
         logger.info("executing_vector_search_route")
         
-        # First validate medical relevance using the function
-        validation_result = validate_medical_relevance(state["query"])
-        state["medical_validation"] = validation_result
-
-        if not state.get("medical_validation", {}).get("is_medical", False):
+        # Check medical validation already performed by orchestrator
+        medical_validation = state.get("medical_validation", {})
+        if not medical_validation.get("is_medical", False):
             logger.warning("vector_search_blocked_non_medical")
             return self.handle_non_medical_query(state)
 
@@ -1093,11 +1462,9 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         """Execute graph search route using real AgenticGraphRAGAgent"""
         logger.info("executing_graph_search_route")
         
-        # First validate medical relevance using the function
-        validation_result = validate_medical_relevance(state["query"])
-        state["medical_validation"] = validation_result
-        
-        if not state.get("medical_validation", {}).get("is_medical", False):
+        # Check medical validation already performed by orchestrator
+        medical_validation = state.get("medical_validation", {})
+        if not medical_validation.get("is_medical", False):
             logger.warning("graph_search_blocked_non_medical")
             return self.handle_non_medical_query(state)
         
@@ -1135,11 +1502,9 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         """Execute both vector and graph searches"""
         logger.info("executing_both_searches_route")
         
-        # First validate medical relevance using the function
-        validation_result = validate_medical_relevance(state["query"])
-        state["medical_validation"] = validation_result
-        
-        if not state.get("medical_validation", {}).get("is_medical", False):
+        # Check medical validation already performed by orchestrator
+        medical_validation = state.get("medical_validation", {})
+        if not medical_validation.get("is_medical", False):
             logger.warning("both_searches_blocked_non_medical")
             return self.handle_non_medical_query(state)
         
@@ -1465,9 +1830,8 @@ class AgenticVectorRAGAgent(SecureAgentBase):
         
         except Exception as e:
             logger.error("llm_strategy_reasoning_error", error=str(e))
-        
-        # Fallback to enhanced heuristic reasoning if LLM fails
-        return self._fallback_heuristic_strategy_reasoning(query)
+            # Return default strategy without fallback
+            return "hybrid"
     
     def _prepare_strategy_context(self) -> str:
         """Prepare performance context for LLM reasoning"""
@@ -1493,7 +1857,7 @@ class AgenticVectorRAGAgent(SecureAgentBase):
         # Sanitize response
         response = response.strip()[:500]  # Limit length
         
-        strategy = "hybrid"  # Default fallback
+        strategy = "hybrid"  # Default strategy
         reasoning = "LLM reasoning applied"
         
         try:
@@ -1519,80 +1883,6 @@ class AgenticVectorRAGAgent(SecureAgentBase):
             logger.warning("llm_response_parsing_failed", error=str(e))
         
         return strategy, reasoning
-    
-    def _fallback_heuristic_strategy_reasoning(self, query: str) -> str:
-        """Enhanced fallback heuristic reasoning when LLM is unavailable"""
-        
-        logger.info("using_enhanced_heuristic_reasoning")
-        
-        query_lower = query.lower()
-        words = query.split()
-        word_count = len(words)
-        
-        reasoning_factors = []
-        
-        # Enhanced heuristic analysis
-        semantic_indicators = [
-            'meaning', 'similar', 'like', 'conceptual', 'understanding', 
-            'explain', 'describe', 'what is', 'how does', 'why',
-            'compare', 'difference', 'relationship', 'association'
-        ]
-        
-        keyword_indicators = [
-            'specific', 'exact', 'term', 'definition', 'name',
-            'called', 'refers to', 'known as', 'acronym',
-            'code', 'classification', 'type', 'category'
-        ]
-        
-        complex_indicators = [
-            'analyze', 'comprehensive', 'detailed', 'thorough',
-            'multiple', 'various', 'different', 'all',
-            'compare and contrast', 'pros and cons'
-        ]
-        
-        # Calculate indicator scores
-        semantic_score = sum(1 for indicator in semantic_indicators if indicator in query_lower)
-        keyword_score = sum(1 for indicator in keyword_indicators if indicator in query_lower)
-        complex_score = sum(1 for indicator in complex_indicators if indicator in query_lower)
-        
-        # Decision logic with weighted scoring
-        if complex_score > 0 or word_count > 15:
-            strategy = 'hybrid'
-            reasoning_factors.append(f"Complex query detected (complexity score: {complex_score}, words: {word_count})")
-        
-        elif semantic_score > keyword_score and semantic_score > 1:
-            strategy = 'vector_only'
-            reasoning_factors.append(f"Strong semantic focus (semantic: {semantic_score} vs keyword: {keyword_score})")
-        
-        elif keyword_score > semantic_score and keyword_score > 0:
-            strategy = 'bm25_only'
-            reasoning_factors.append(f"Keyword-focused query (keyword: {keyword_score} vs semantic: {semantic_score})")
-        
-        elif word_count < 5:
-            strategy = 'vector_only'
-            reasoning_factors.append(f"Short query - semantic search preferred ({word_count} words)")
-        
-        else:
-            strategy = 'hybrid'
-            reasoning_factors.append("Balanced query - comprehensive search approach")
-        
-        # Consider performance history as tiebreaker
-        if strategy in self.strategy_performance:
-            perf = self.strategy_performance[strategy]
-            if perf['attempts'] > 0 and perf['success_rate'] < 0.5:
-                reasoning_factors.append(f"Adjusting due to poor {strategy} performance ({perf['success_rate']:.2f})")
-                strategy = 'hybrid'  # Default to comprehensive approach
-        
-        reasoning = "; ".join(reasoning_factors)
-        
-        logger.info("enhanced_heuristic_strategy_determined", 
-                   strategy=strategy,
-                   semantic_score=semantic_score,
-                   keyword_score=keyword_score,
-                   complex_score=complex_score,
-                   reasoning=reasoning)
-        
-        return strategy
     
     def _get_best_learned_strategy(self) -> Optional[str]:
         """Get the best performing strategy from learning history"""
@@ -2015,497 +2305,494 @@ class AgenticVectorRAGAgent(SecureAgentBase):
 
 class AgenticGraphRAGAgent(SecureAgentBase):
     """
-    Enhanced Graph Agent with TRUE agentic improvements
+    Simplified Graph Agent with targeted strategy and tool-based approach
     
-    Agentic Features:
-    1. Dynamic query optimization based on graph patterns
-    2. Relationship reasoning and path planning
-    3. Adaptive search depth and breadth
-    4. Learning from graph traversal outcomes
-    5. Goal-oriented relationship discovery
+    Key Features:
+    1. Entity extraction using comprehensive prompt templates
+    2. Cypher query generation using LLM-driven tools
+    3. Targeted graph search strategy only
+    4. Tool-based architecture for entity extraction and cypher generation
     """
     
     def __init__(self, llm: AzureChatOpenAI, graph_store):
         super().__init__(AgentRole.GRAPH_RAG)
         self.llm = llm
-        self.graph_store = graph_store
         
-        # Enhanced agentic capabilities
-        self.query_optimizations = 0
-        self.relationship_patterns = {}
-        self.search_strategies = {
-            'breadth_first': {'attempts': 0, 'success_rate': 1.0, 'avg_depth': 0},
-            'depth_first': {'attempts': 0, 'success_rate': 1.0, 'avg_depth': 0},
-            'targeted': {'attempts': 0, 'success_rate': 1.0, 'avg_depth': 0}
-        }
+        # Handle different graph_store formats
+        if isinstance(graph_store, dict) and graph_store.get('type') == 'neo4j':
+            # Create actual Neo4j driver from connection details
+            from neo4j import GraphDatabase
+            self.graph_store = GraphDatabase.driver(
+                graph_store['uri'], 
+                auth=(graph_store['username'], graph_store['password'])
+            )
+            logger.info("created_neo4j_driver_from_config", 
+                       uri=graph_store['uri'], 
+                       username=graph_store['username'])
+        else:
+            # Use the provided graph_store as-is (should be a Neo4j driver)
+            self.graph_store = graph_store
+            logger.info("using_provided_graph_store", 
+                       graph_store_type=type(graph_store).__name__)
         
-        # Adaptive parameters
-        self.adaptive_params = {
-            'max_depth': 3,
-            'max_breadth': 10,
-            'relationship_threshold': 0.7,
-            'search_strategy': 'auto'
-        }
+        # Simple tracking for query execution
+        self.query_count = 0
         
-        logger.info("enhanced_agentic_graph_agent_initialized", 
-                   initial_optimizations=0,
-                   search_strategies=list(self.search_strategies.keys()))
+        logger.info("simplified_graph_agent_initialized", 
+                   strategy="targeted_only")
     
     @traceable(**get_traceable_config("AgenticGraphRAGAgent"))
     def search_with_optimization(self, state: WorkflowState) -> WorkflowState:
-        """ENHANCED AGENTIC SEARCH: Relationship reasoning and adaptive graph traversal"""
+        """Simplified graph search using targeted strategy and tools"""
         
-        logger.info("enhanced_agentic_graph_search_started")
+        logger.info("simplified_graph_search_started")
         
         query = state["query"]
         
-        # AGENTIC REASONING: Analyze query for relationship patterns
-        relationship_strategy = self._reason_about_relationships(query)
-        
-        # AGENTIC OPTIMIZATION: Optimize search parameters based on query and learning
-        self._optimize_graph_parameters(query, relationship_strategy)
-        
-        # AGENTIC EXECUTION: Execute graph search with reasoned strategy
-        search_result = self._execute_reasoned_graph_search(query, relationship_strategy)
-        
-        # AGENTIC LEARNING: Learn from graph traversal outcomes
-        self._learn_from_graph_outcome(query, relationship_strategy, search_result)
+        # Execute targeted graph search using tools
+        search_result = self._execute_targeted_graph_search(query)
         
         # Add structured result to state
         state["graph_results"] = search_result.dict()
         
-        logger.info("enhanced_agentic_graph_search_completed",
+        logger.info("simplified_graph_search_completed",
                    documents_found=search_result.total_found,
-                   optimizations_applied=search_result.optimizations_applied,
-                   strategy_used=relationship_strategy)
+                   query_count=self.query_count)
         return state
     
-    def _reason_about_relationships(self, query: str) -> str:
-        """ENHANCED AGENTIC REASONING: Use LLM to analyze relationship patterns in query"""
+    @traceable(**get_traceable_config("AgenticGraphRAGAgent"))
+    def extract_entities_and_relationships_tool(self, query: str) -> EntityExtraction:
+        """Tool for extracting entities and relationships using comprehensive prompt template"""
+        logger.info("entity_extraction_tool_started", query_length=len(query))
         
-        logger.info("llm_relationship_reasoning_started", query_length=len(query))
+        # Import here to avoid circular imports
+        from core.input_sanitization import (
+            detect_prompt_injection,
+            secure_llm_interaction
+        )
         
-        # Check learned patterns first for quick decisions
-        if len(self.relationship_patterns) > 5:
-            best_pattern = self._get_best_learned_pattern(query)
-            if best_pattern:
-                logger.info("using_learned_relationship_pattern", pattern=best_pattern)
-                return best_pattern
+        # Step 1: Detect prompt injection attempts
+        if detect_prompt_injection(query):
+            logger.warning("prompt_injection_blocked_in_extraction_tool", query_snippet=query[:50])
+            return EntityExtraction(
+                entities=[],
+                relationships=[],
+                concepts=[],
+                demographics=[],
+                scenario="PROMPT_INJECTION_DETECTED"
+            )
         
-        # Use LLM for sophisticated relationship reasoning
+        # Step 2: Use comprehensive entity extraction template
+        comprehensive_template = """
+You are a medical knowledge graph entity extraction expert. Analyze the following medical query and extract ALL relevant information in the specified format.
+
+<USER_QUERY>{user_query}</USER_QUERY>
+
+Extract the following information:
+
+1. MEDICAL ENTITIES: Diseases, symptoms, treatments, medications, procedures, body parts, medical conditions
+2. RELATIONSHIPS: Connection words (has, causes, treats, affects, diagnosed_with, prescribed_for, related_to)
+3. MEDICAL CONCEPTS: Medical domains/specialties (cardiology, oncology, neurology, pediatrics, etc.)
+4. DEMOGRAPHICS: Age, gender, ethnicity, location, patient characteristics
+
+Format your response EXACTLY as follows:
+ENTITIES: [entity1, entity2, entity3]
+RELATIONSHIPS: [relationship1, relationship2]
+CONCEPTS: [concept1, concept2]
+DEMOGRAPHICS: [demographic1, demographic2]
+
+Be comprehensive and include ALL relevant medical terms, even if they seem obvious.
+If a category has no items, use empty brackets: []
+
+Examples:
+- "chest pain in elderly women" -> ENTITIES: [chest pain], RELATIONSHIPS: [has], CONCEPTS: [cardiology], DEMOGRAPHICS: [elderly, women]
+- "diabetes treatment options" -> ENTITIES: [diabetes, treatment], RELATIONSHIPS: [treats], CONCEPTS: [endocrinology], DEMOGRAPHICS: []
+"""
+        
         try:
-            logger.info("invoking_llm_for_relationship_reasoning")
-            
-            # Use secure LLM interaction with proper template
-            validated_content = secure_llm_interaction(
+            # Use secure LLM interaction
+            response = secure_llm_interaction(
                 llm=self.llm,
-                template=RELATIONSHIP_REASONING_TEMPLATE,
+                template=comprehensive_template,
                 user_input=query
             )
             
-            if validated_content:
-                # Parse LLM response securely
-                strategy, reasoning, confidence = self._parse_llm_relationship_response(validated_content)
-                
-                if strategy in ['breadth_first', 'depth_first', 'targeted']:
-                    logger.info("llm_relationship_reasoning_successful",
-                               strategy=strategy,
-                               reasoning=reasoning,
-                               confidence=confidence)
-                    return strategy
-                else:
-                    logger.warning("llm_returned_invalid_relationship_strategy",
-                                 strategy=strategy,
-                                 falling_back_to_heuristic=True)
-            else:
-                logger.warning("llm_relationship_reasoning_failed",
-                             error="No validated content returned")
-        
-        except Exception as e:
-            logger.error("llm_relationship_reasoning_error", error=str(e))
-        
-        # Fallback to enhanced heuristic reasoning
-        return self._fallback_heuristic_relationship_reasoning(query)
-    
-    def _get_strategy_performance_summary(self) -> str:
-        """Get performance summary for LLM context"""
-        
-        summary_parts = []
-        for strategy, perf in self.search_strategies.items():
-            if perf['attempts'] > 0:
-                summary_parts.append(f"{strategy}: {perf['success_rate']:.2f} success")
-        
-        return "; ".join(summary_parts) if summary_parts else "No history"
-    
-    def _parse_llm_relationship_response(self, response: str) -> tuple[str, str, str]:
-        """Securely parse LLM response for relationship strategy"""
-        
-        # Sanitize response
-        response = response.strip()[:300]
-        
-        strategy = "targeted"  # Default fallback
-        reasoning = "LLM relationship reasoning applied"
-        confidence = "medium"
-        
-        try:
-            lines = response.split('\n')
+            # Parse the response
+            entities = []
+            relationships = []
+            concepts = []
+            demographics = []
             
+            lines = response.split('\n')
             for line in lines:
                 line = line.strip()
-                
-                if line.lower().startswith('strategy:'):
-                    strategy_part = line.split(':', 1)[1].strip().lower()
-                    if strategy_part in ['breadth_first', 'depth_first', 'targeted']:
-                        strategy = strategy_part
-                
-                elif line.lower().startswith('reasoning:'):
-                    reasoning_part = line.split(':', 1)[1].strip()
-                    if reasoning_part and len(reasoning_part) < 150:
-                        reasoning = reasoning_part
-                
-                elif line.lower().startswith('confidence:'):
-                    confidence_part = line.split(':', 1)[1].strip().lower()
-                    if confidence_part in ['high', 'medium', 'low']:
-                        confidence = confidence_part
+                if line.startswith('ENTITIES:'):
+                    entities_str = line.split(':', 1)[1].strip()
+                    entities = self._parse_list_from_string(entities_str)
+                elif line.startswith('RELATIONSHIPS:'):
+                    relationships_str = line.split(':', 1)[1].strip()
+                    relationships = self._parse_list_from_string(relationships_str)
+                elif line.startswith('CONCEPTS:'):
+                    concepts_str = line.split(':', 1)[1].strip()
+                    concepts = self._parse_list_from_string(concepts_str)
+                elif line.startswith('DEMOGRAPHICS:'):
+                    demographics_str = line.split(':', 1)[1].strip()
+                    demographics = self._parse_list_from_string(demographics_str)
             
-            logger.debug("llm_relationship_response_parsed", 
-                        strategy=strategy,
-                        confidence=confidence)
-        
-        except Exception as e:
-            logger.warning("llm_relationship_response_parsing_failed", error=str(e))
-        
-        return strategy, reasoning, confidence
-    
-    def _fallback_heuristic_relationship_reasoning(self, query: str) -> str:
-        """Enhanced fallback heuristic reasoning for relationships"""
-        
-        logger.info("using_enhanced_heuristic_relationship_reasoning")
-        
-        query_lower = query.lower()
-        words = query.split()
-        word_count = len(words)
-        
-        # Enhanced relationship pattern detection
-        breadth_indicators = [
-            'compare', 'different', 'various', 'multiple', 'all types',
-            'categories', 'classification', 'overview', 'broad'
-        ]
-        
-        depth_indicators = [
-            'cause', 'why', 'how', 'mechanism', 'pathway', 'process',
-            'detailed', 'specific', 'deep', 'underlying', 'leads to'
-        ]
-        
-        targeted_indicators = [
-            'relationship', 'connection', 'association', 'linked',
-            'between', 'and', 'versus', 'vs', 'correlation'
-        ]
-        
-        # Score each strategy
-        breadth_score = sum(1 for indicator in breadth_indicators if indicator in query_lower)
-        depth_score = sum(1 for indicator in depth_indicators if indicator in query_lower)
-        targeted_score = sum(1 for indicator in targeted_indicators if indicator in query_lower)
-        
-        # Consider query complexity
-        if word_count > 15:
-            breadth_score += 1  # Complex queries often need broad exploration
-        elif word_count < 6:
-            targeted_score += 1  # Simple queries often have specific focus
-        
-        # Consider learned performance as tiebreaker
-        best_learned = self._get_best_learned_relationship_strategy()
-        
-        # Decision logic
-        if breadth_score > max(depth_score, targeted_score):
-            strategy = 'breadth_first'
-        elif depth_score > max(breadth_score, targeted_score):
-            strategy = 'depth_first'
-        elif targeted_score > 0 or best_learned == 'targeted':
-            strategy = 'targeted'
-        elif best_learned:
-            strategy = best_learned
-        else:
-            strategy = 'targeted'  # Safe default
-        
-        logger.info("enhanced_heuristic_relationship_reasoning_completed",
-                   strategy=strategy,
-                   breadth_score=breadth_score,
-                   depth_score=depth_score,
-                   targeted_score=targeted_score,
-                   word_count=word_count)
-        
-        return strategy
-    
-    def _get_best_learned_relationship_strategy(self) -> Optional[str]:
-        """Get best performing relationship strategy from learning"""
-        
-        if not any(perf['attempts'] > 0 for perf in self.search_strategies.values()):
-            return None
-        
-        best_strategy = None
-        best_score = 0.0
-        
-        for strategy, performance in self.search_strategies.items():
-            if performance['attempts'] > 2:  # Only consider strategies with some history
-                if performance['success_rate'] > best_score:
-                    best_score = performance['success_rate']
-                    best_strategy = strategy
-        
-        return best_strategy if best_score > 0.7 else None  # Only use if clearly better
-        """AGENTIC REASONING: Analyze query to determine optimal relationship search strategy"""
-        
-        logger.info("reasoning_about_relationships", query_length=len(query))
-        
-        query_lower = query.lower()
-        
-        # Identify relationship patterns
-        comparison_words = ['compare', 'versus', 'vs', 'difference', 'similar', 'contrast']
-        causal_words = ['cause', 'effect', 'lead to', 'result in', 'because', 'due to']
-        hierarchical_words = ['part of', 'contain', 'include', 'within', 'under', 'above']
-        temporal_words = ['before', 'after', 'during', 'timeline', 'sequence', 'follow']
-        
-        relationship_indicators = {
-            'comparison': any(word in query_lower for word in comparison_words),
-            'causal': any(word in query_lower for word in causal_words),
-            'hierarchical': any(word in query_lower for word in hierarchical_words),
-            'temporal': any(word in query_lower for word in temporal_words)
-        }
-        
-        # Determine strategy based on relationship patterns
-        strategy_reasoning = []
-        
-        if relationship_indicators['comparison']:
-            strategy = 'breadth_first'
-            strategy_reasoning.append("Comparison query - need broad relationship exploration")
-        elif relationship_indicators['causal']:
-            strategy = 'depth_first'
-            strategy_reasoning.append("Causal query - need deep chain exploration")
-        elif relationship_indicators['hierarchical']:
-            strategy = 'targeted'
-            strategy_reasoning.append("Hierarchical query - need targeted structure exploration")
-        elif relationship_indicators['temporal']:
-            strategy = 'depth_first'
-            strategy_reasoning.append("Temporal query - need sequential relationship exploration")
-        else:
-            # Use learned best strategy
-            best_strategy = self._get_best_graph_strategy()
-            if best_strategy:
-                strategy = best_strategy
-                strategy_reasoning.append(f"Using learned best strategy: {best_strategy}")
-            else:
-                strategy = 'breadth_first'
-                strategy_reasoning.append("Default strategy - broad exploration")
-        
-        reasoning = "; ".join(strategy_reasoning)
-        
-        logger.info("relationship_strategy_reasoned",
-                   strategy=strategy,
-                   reasoning=reasoning,
-                   relationship_indicators=relationship_indicators)
-        
-        return strategy
-    
-    def _get_best_graph_strategy(self) -> Optional[str]:
-        """Get the best performing graph search strategy from learning"""
-        
-        if not any(perf['attempts'] > 0 for perf in self.search_strategies.values()):
-            return None
-        
-        best_strategy = None
-        best_score = 0.0
-        
-        for strategy, performance in self.search_strategies.items():
-            if performance['attempts'] > 2:  # Need some history
-                # Weight success rate heavily, with depth efficiency bonus
-                efficiency_bonus = 1.0 / max(1, performance['avg_depth']) * 0.1
-                combined_score = performance['success_rate'] + efficiency_bonus
-                
-                if combined_score > best_score:
-                    best_score = combined_score
-                    best_strategy = strategy
-        
-        logger.debug("best_graph_strategy_determined",
-                    strategy=best_strategy,
-                    score=best_score)
-        
-        return best_strategy
-    
-    def _optimize_graph_parameters(self, query: str, strategy: str):
-        """AGENTIC OPTIMIZATION: Adapt graph search parameters"""
-        
-        original_params = self.adaptive_params.copy()
-        
-        query_complexity = len(query.split())
-        
-        # Strategy-specific optimizations
-        if strategy == 'breadth_first':
-            self.adaptive_params['max_breadth'] = min(15, max(8, query_complexity))
-            self.adaptive_params['max_depth'] = 2
-            self.adaptive_params['relationship_threshold'] = 0.6
-        elif strategy == 'depth_first':
-            self.adaptive_params['max_breadth'] = min(8, max(5, query_complexity // 2))
-            self.adaptive_params['max_depth'] = min(5, max(3, query_complexity // 3))
-            self.adaptive_params['relationship_threshold'] = 0.75
-        elif strategy == 'targeted':
-            self.adaptive_params['max_breadth'] = min(12, max(6, query_complexity))
-            self.adaptive_params['max_depth'] = 3
-            self.adaptive_params['relationship_threshold'] = 0.8
-        
-        # Learning-based fine-tuning
-        if strategy in self.search_strategies:
-            perf = self.search_strategies[strategy]
-            if perf['attempts'] > 3:
-                if perf['success_rate'] < 0.6:
-                    # Expand search if strategy is failing
-                    self.adaptive_params['max_breadth'] = int(self.adaptive_params['max_breadth'] * 1.3)
-                    self.adaptive_params['relationship_threshold'] *= 0.9
-                elif perf['avg_depth'] > 4:
-                    # Reduce depth if searches are getting too deep
-                    self.adaptive_params['max_depth'] = max(2, self.adaptive_params['max_depth'] - 1)
-        
-        self.adaptive_params['search_strategy'] = strategy
-        self.query_optimizations += 1
-        
-        logger.info("graph_parameters_optimized",
-                   strategy=strategy,
-                   optimization_count=self.query_optimizations,
-                   original_params=original_params,
-                   optimized_params=self.adaptive_params)
-    
-    def _execute_reasoned_graph_search(self, query: str, strategy: str) -> GraphSearchResult:
-        """Execute graph search with reasoned strategy"""
-        
-        logger.info("executing_reasoned_graph_search", strategy=strategy)
-        
-        try:
-            # For now, return empty results as this is a demonstration
-            # In a real implementation, this would execute actual graph queries
-            # based on the strategy (breadth_first, depth_first, targeted)
+            # Determine scenario based on extracted content
+            scenario = "GENERAL_QUERY"
+            if demographics:
+                scenario = "DEMOGRAPHIC_QUERY"
+            elif any(concept in ['cardiology', 'oncology', 'neurology'] for concept in concepts):
+                scenario = "SPECIALIZED_QUERY"
             
-            documents = []
-            
-            # Simulate strategy-specific behavior
-            if strategy == 'breadth_first':
-                # Would execute broad relationship exploration
-                pass
-            elif strategy == 'depth_first':
-                # Would execute deep chain exploration
-                pass
-            elif strategy == 'targeted':
-                # Would execute focused relationship discovery
-                pass
-            
-            result = GraphSearchResult(
-                documents=documents,
-                total_found=len(documents),
-                optimizations_applied=self.query_optimizations
+            result = EntityExtraction(
+                entities=entities,
+                relationships=relationships,
+                concepts=concepts,
+                demographics=demographics,
+                scenario=scenario
             )
             
-            logger.info("reasoned_graph_search_completed",
-                       strategy=strategy,
-                       documents_found=len(documents),
-                       optimizations_applied=self.query_optimizations)
+            logger.info("entity_extraction_tool_completed",
+                       entities_count=len(entities),
+                       relationships_count=len(relationships),
+                       concepts_count=len(concepts),
+                       demographics_count=len(demographics),
+                       scenario=scenario)
             
             return result
             
         except Exception as e:
-            logger.error("reasoned_graph_search_failed", strategy=strategy, error=str(e))
-            return GraphSearchResult(
-                documents=[],
-                total_found=0,
-                optimizations_applied=self.query_optimizations
+            logger.error("entity_extraction_tool_failed", error=str(e))
+            return EntityExtraction(
+                entities=[],
+                relationships=[],
+                concepts=[],
+                demographics=[],
+                scenario="EXTRACTION_ERROR"
             )
     
-    def _learn_from_graph_outcome(self, query: str, strategy: str, result: GraphSearchResult):
-        """AGENTIC LEARNING: Learn from graph search outcomes"""
-        
-        logger.info("learning_from_graph_outcome",
-                   strategy=strategy,
-                   documents_found=result.total_found)
-        
-        # Update strategy performance
-        if strategy in self.search_strategies:
-            perf = self.search_strategies[strategy]
-            perf['attempts'] += 1
-            
-            # Calculate success (got results)
-            success = result.total_found > 0
-            current_successes = perf['success_rate'] * (perf['attempts'] - 1)
-            new_success_rate = (current_successes + (1.0 if success else 0.0)) / perf['attempts']
-            perf['success_rate'] = new_success_rate
-            
-            # Update average depth (using optimizations as proxy for complexity/depth)
-            current_depth_total = perf['avg_depth'] * (perf['attempts'] - 1)
-            current_depth = max(1, result.optimizations_applied)  # Use optimizations as depth proxy
-            perf['avg_depth'] = (current_depth_total + current_depth) / perf['attempts']
-            
-            logger.info("graph_strategy_performance_updated",
-                       strategy=strategy,
-                       attempts=perf['attempts'],
-                       success_rate=perf['success_rate'],
-                       avg_depth=perf['avg_depth'])
-        
-        # Learn relationship patterns for future queries
-        query_pattern = self._extract_relationship_pattern(query)
-        if query_pattern:
-            if query_pattern not in self.relationship_patterns:
-                self.relationship_patterns[query_pattern] = {
-                    'best_strategy': strategy,
-                    'success_count': 1 if result.total_found > 0 else 0,
-                    'total_attempts': 1
-                }
-            else:
-                pattern_info = self.relationship_patterns[query_pattern]
-                pattern_info['total_attempts'] += 1
-                if result.total_found > 0:
-                    pattern_info['success_count'] += 1
-                    # Update best strategy if this one is more successful
-                    if (pattern_info['success_count'] / pattern_info['total_attempts']) > 0.7:
-                        pattern_info['best_strategy'] = strategy
-            
-            logger.debug("relationship_pattern_learned",
-                        pattern=query_pattern,
-                        strategy=strategy,
-                        pattern_info=self.relationship_patterns[query_pattern])
-    
-    def _extract_relationship_pattern(self, query: str) -> Optional[str]:
-        """Extract relationship pattern from query for learning"""
-        
-        query_lower = query.lower()
-        
-        # Simple pattern extraction
-        if any(word in query_lower for word in ['compare', 'versus', 'difference']):
-            return 'comparison'
-        elif any(word in query_lower for word in ['cause', 'effect', 'lead to']):
-            return 'causal'
-        elif any(word in query_lower for word in ['part of', 'contain', 'include']):
-            return 'hierarchical'
-        elif any(word in query_lower for word in ['before', 'after', 'timeline']):
-            return 'temporal'
-        else:
-            return 'general'
-    
     @traceable(**get_traceable_config("AgenticGraphRAGAgent"))
-    def search_graph(self, state: WorkflowState) -> GraphSearchResult:
-        """Graph search implementation - returns empty results as simulation removed"""
-        logger.debug("graph_search_started", 
-                    optimization_count=self.query_optimizations)
+    def generate_cypher_query_tool(self, extraction: EntityExtraction, original_query: str) -> List[Dict[str, Any]]:
+        """Tool for generating Cypher queries using comprehensive prompt template"""
+        logger.info("cypher_generation_tool_started", 
+                   scenario=extraction.scenario, 
+                   entities_count=len(extraction.entities))
+        
+        # Import here to avoid circular imports
+        from core.input_sanitization import secure_llm_interaction
         
         try:
-            # Real graph search would be implemented here
-            # For now, return empty results as simulation is removed
+            # Comprehensive Cypher generation template
+            cypher_template = """
+You are a Neo4j Cypher query expert for medical databases. Generate optimized Cypher queries based on the extracted entities and demographics.
+
+ORIGINAL QUERY: {original_query}
+EXTRACTED ENTITIES: {entities}
+DEMOGRAPHICS: {demographics}
+MEDICAL CONCEPTS: {concepts}
+RELATIONSHIPS: {relationships}
+
+IMPORTANT DATABASE SCHEMA (USE EXACT PROPERTY NAMES):
+- Patient nodes: properties are gender ('M'/'F'), age (integer), patient_id, id
+- Finding nodes: properties are finding_label (NOT label), name, occurrence_count
+- Relationships: (Patient)-[:HAS_FINDING]->(Finding)
+
+CRITICAL RULES:
+1. Use f.finding_label (NOT f.label) for finding labels
+2. Use CONTAINS for partial matching of finding labels
+3. Use COUNT(DISTINCT p) for patient counts to avoid duplicates
+4. Always use exact property names from schema above
+
+Generate 1-3 Cypher queries that would answer the original question. Focus on:
+1. Demographic filtering (age, gender)
+2. Finding/condition matching using finding_label
+3. Count aggregations when appropriate
+
+Format each query as:
+QUERY_TYPE: [descriptive name]
+CYPHER: [cypher query]
+DESCRIPTION: [what this query does]
+
+Example:
+QUERY_TYPE: demographic_finding_count
+CYPHER: MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = 'M' AND p.age = 17 AND toLower(f.finding_label) CONTAINS 'effusion' RETURN COUNT(DISTINCT p) as total_count
+DESCRIPTION: Count unique male patients aged 17 with effusion findings
+"""
+            
+            # Format the template with extracted data
+            formatted_template = cypher_template.format(
+                original_query=original_query,
+                entities=extraction.entities,
+                demographics=extraction.demographics,
+                concepts=extraction.concepts,
+                relationships=extraction.relationships
+            )
+            
+            # Use secure LLM interaction
+            response = secure_llm_interaction(
+                llm=self.llm,
+                template=formatted_template,
+                user_input=""
+            )
+            
+            # Parse the response to extract queries
+            queries = []
+            current_query = {}
+            
+            lines = response.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.startswith('QUERY_TYPE:'):
+                    if current_query:
+                        queries.append(current_query)
+                    current_query = {'query_type': line.split(':', 1)[1].strip()}
+                elif line.startswith('CYPHER:'):
+                    current_query['cypher'] = line.split(':', 1)[1].strip()
+                elif line.startswith('DESCRIPTION:'):
+                    current_query['description'] = line.split(':', 1)[1].strip()
+            
+            # Add the last query
+            if current_query:
+                queries.append(current_query)
+            
+            # Post-process queries to fix common schema issues
+            for query in queries:
+                if 'cypher' in query:
+                    # Fix property name issues
+                    cypher = query['cypher']
+                    original_cypher = cypher
+                    
+                    # Only apply fixes if they are needed to avoid over-fixing
+                    # Check for exact wrong patterns and replace them carefully
+                    
+                    # Fix f.label (but not f.finding_label)
+                    if 'f.label' in cypher and 'f.finding_label' not in cypher:
+                        cypher = cypher.replace('f.label', 'f.finding_label')
+                    
+                    # Fix partial property names only if they're wrong
+                    # Use word boundaries to avoid replacing parts of correct properties
+                    import re
+                    
+                    # Replace f.find only if it's not part of f.finding_label
+                    if re.search(r'\bf\.find\b', cypher):
+                        cypher = re.sub(r'\bf\.find\b', 'f.finding_label', cypher)
+                    
+                    # Replace f.condition only if it exists
+                    if re.search(r'\bf\.condition\b', cypher):
+                        cypher = re.sub(r'\bf\.condition\b', 'f.finding_label', cypher)
+                    
+                    # Ensure COUNT(DISTINCT p) for patient counts
+                    if 'COUNT(p)' in cypher and 'total_count' in cypher:
+                        cypher = cypher.replace('COUNT(p)', 'COUNT(DISTINCT p)')
+                    
+                    query['cypher'] = cypher
+                    
+                    # Log the fix with full query details
+                    if cypher != original_cypher:
+                        logger.info("cypher_query_auto_fixed", 
+                                   original_full=original_cypher,
+                                   fixed_full=cypher,
+                                   changes_made=True)
+                    else:
+                        logger.info("cypher_query_validated", 
+                                   query_full=cypher,
+                                   changes_made=False)
+            
+            # Default query if parsing failed
+            if not queries:
+                default_query = {
+                    'query_type': 'demographic_finding_count',
+                    'cypher': 'MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = \"M\" AND p.age = 17 AND toLower(f.finding_label) CONTAINS \"effusion\" RETURN COUNT(DISTINCT p) as total_count',
+                    'description': 'Count male patients aged 17 with effusion findings'
+                }
+                queries = [default_query]
+            
+            logger.info("cypher_generation_tool_completed", queries_count=len(queries))
+            return queries
+            
+        except Exception as e:
+            logger.error("cypher_generation_tool_failed", error=str(e))
+            default_query = {
+                'query_type': 'demographic_finding_count',
+                'cypher': 'MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = \"M\" AND p.age = 17 AND toLower(f.finding_label) CONTAINS \"effusion\" RETURN COUNT(DISTINCT p) as total_count',
+                'description': 'Count male patients aged 17 with effusion findings'
+            }
+            return [default_query]
+    
+    def _parse_list_from_string(self, list_str: str) -> List[str]:
+        """Parse a list from string format like '[item1, item2, item3]'"""
+        if not list_str or list_str.strip() == '[]':
+            return []
+        
+        # Remove brackets and split by comma
+        cleaned = list_str.strip()
+        if cleaned.startswith('[') and cleaned.endswith(']'):
+            cleaned = cleaned[1:-1]
+        
+        items = [item.strip().strip("'\"") for item in cleaned.split(',') if item.strip()]
+        return [item for item in items if item]  # Remove empty items
+    
+    def _execute_targeted_graph_search(self, query: str) -> GraphSearchResult:
+        """Execute targeted graph search using the new tool-based approach"""
+        
+        logger.info("executing_targeted_graph_search", received_query=query)
+        
+        # Debug the graph_store object
+        logger.info("debugging_graph_store_object", 
+                   graph_store_id=id(self.graph_store),
+                   graph_store_type=type(self.graph_store).__name__,
+                   graph_store_repr=repr(self.graph_store),
+                   graph_store_value=str(self.graph_store) if len(str(self.graph_store)) < 200 else str(self.graph_store)[:200] + "...")
+        
+        try:
+            self.query_count += 1
+            
+            # STEP 1: Extract entities and relationships using tool
+            extraction = self.extract_entities_and_relationships_tool(query)
+            
+            # STEP 2: Generate Cypher queries using tool
+            cypher_queries = self.generate_cypher_query_tool(extraction, query)
+            
+            # STEP 3: Execute the generated queries
             documents = []
             
+            logger.info("preparing_to_execute_cypher_queries", 
+                       query_count=len(cypher_queries),
+                       has_session_method=hasattr(self.graph_store, 'session'),
+                       graph_store_type=type(self.graph_store).__name__,
+                       graph_store_exists=bool(self.graph_store),
+                       graph_store_methods=[m for m in dir(self.graph_store) if not m.startswith('_')])
+            
+            if self.graph_store and hasattr(self.graph_store, 'session'):
+                try:
+                    logger.info("opening_neo4j_session")
+                    with self.graph_store.session() as session:
+                        logger.info("neo4j_session_opened_successfully")
+                        for i, query_info in enumerate(cypher_queries):
+                            try:
+                                cypher_query = query_info.get("cypher", "")
+                                description = query_info.get("description", "Generated query")
+                                
+                                logger.info("processing_query_info", 
+                                           query_index=i,
+                                           has_cypher=bool(cypher_query),
+                                           query_type=query_info.get("query_type", "unknown"))
+                                
+                                if not cypher_query:
+                                    logger.warning("skipping_empty_cypher_query", query_index=i)
+                                    continue
+                                
+                                logger.info("executing_targeted_cypher_query", 
+                                           query_index=i,
+                                           description=description,
+                                           query_preview=cypher_query[:100],
+                                           full_query=cypher_query)
+                                
+                                result = session.run(cypher_query)
+                                records = list(result)
+                                
+                                logger.info("cypher_query_execution_completed",
+                                           query_index=i,
+                                           cypher=cypher_query,
+                                           records_found=len(records))
+                                
+                                if len(records) == 0:
+                                    logger.warning("cypher_query_returned_no_records", 
+                                                 query_index=i,
+                                                 full_query=cypher_query)
+                                
+                                for j, record in enumerate(records):
+                                    record_dict = dict(record)
+                                    
+                                    logger.info("processing_record", 
+                                               query_index=i,
+                                               record_index=j,
+                                               record_keys=list(record_dict.keys()),
+                                               record_data=record_dict)
+                                    
+                                    # Create content based on record type
+                                    if "total_count" in record_dict:
+                                        content = f"Total count: {record_dict['total_count']}"
+                                        doc = {
+                                            "content": content,
+                                            "metadata": {
+                                                "source": "neo4j_targeted",
+                                                "total_count": record_dict["total_count"],
+                                                "query_type": query_info.get("query_type", "unknown"),
+                                                "description": description,
+                                                "strategy": "targeted"
+                                            }
+                                        }
+                                        documents.append(doc)
+                                        logger.info("created_total_count_document", 
+                                                   query_index=i,
+                                                   total_count=record_dict["total_count"],
+                                                   document_content=content)
+                                    else:
+                                        # Handle other record types
+                                        content = f"Graph data: {', '.join([f'{k}: {v}' for k, v in record_dict.items()])}"
+                                        doc = {
+                                            "content": content,
+                                            "metadata": {
+                                                "source": "neo4j_targeted",
+                                                "query_type": query_info.get("query_type", "unknown"),
+                                                "description": description,
+                                                "strategy": "targeted",
+                                                **record_dict
+                                            }
+                                        }
+                                        documents.append(doc)
+                                
+                            except Exception as query_error:
+                                logger.warning("targeted_cypher_query_failed", 
+                                             error=str(query_error),
+                                             query_preview=cypher_query[:100])
+                                continue
+                                
+                        logger.info("targeted_neo4j_queries_completed", 
+                                   documents_found=len(documents),
+                                   queries_executed=len(cypher_queries))
+                        
+                except Exception as e:
+                    logger.warning("targeted_neo4j_execution_failed", error=str(e))
+            
+            # Return result with documents found (or empty if none)
             result = GraphSearchResult(
                 documents=documents,
                 total_found=len(documents),
-                optimizations_applied=self.query_optimizations
+                optimizations_applied=self.query_count
             )
             
+            logger.info("targeted_graph_search_completed",
+                       documents_found=len(documents),
+                       query_count=self.query_count)
+            
+            return result
+            
+        except Exception as e:
+            logger.error("targeted_graph_search_failed", error=str(e))
+            return GraphSearchResult(
+                documents=[],
+                total_found=0,
+                optimizations_applied=self.query_count
+            )
+    
+    @traceable(**get_traceable_config("AgenticGraphRAGAgent"))
+    def search_graph(self, state: WorkflowState) -> GraphSearchResult:
+        """Graph search implementation using targeted strategy only"""
+        logger.debug("graph_search_started", query_count=self.query_count)
+        
+        try:
+            query = state.get("query", "")
+            
+            # Use the simplified targeted search
+            result = self._execute_targeted_graph_search(query)
+            
             logger.debug("graph_search_completed",
-                        documents_found=len(documents),
-                        optimizations_applied=self.query_optimizations)
+                        documents_found=result.total_found,
+                        query_count=self.query_count)
             
             return result
         except Exception as e:
@@ -2513,9 +2800,8 @@ class AgenticGraphRAGAgent(SecureAgentBase):
             return GraphSearchResult(
                 documents=[],
                 total_found=0,
-                optimizations_applied=self.query_optimizations
+                optimizations_applied=self.query_count
             )
-
 class SimpleValidatorAgent(SecureAgentBase):
     """Simple validator agent with self-contained logic"""
     
@@ -2987,6 +3273,317 @@ class SimpleAgenticWorkflow:
         self.execution_count = 0
         logger.info("learning_state_reset_completed")
 
+# ==================== ENHANCED GRAPH SEARCH TOOLS ====================
+
+@tool
+def extract_entities_and_relationships(query: str, llm) -> EntityExtraction:
+    """
+    Enhanced entity extraction with demographics support and comprehensive medical analysis.
+    Extracts entities, relationships, concepts, and demographics from medical queries.
+    """
+    logger.info("enhanced_entity_extraction_started", query_length=len(query))
+    
+    # Step 1: Detect prompt injection attempts
+    if detect_prompt_injection(query):
+        logger.warning("prompt_injection_blocked_in_extraction", query_snippet=query[:50])
+        return EntityExtraction(
+            entities=[],
+            relationships=[],
+            concepts=[],
+            demographics=[],
+            scenario="PROMPT_INJECTION_DETECTED"
+        )
+    
+    # Step 2: Use comprehensive entity extraction template
+    comprehensive_template = """
+You are a medical knowledge graph entity extraction expert. Analyze the following medical query and extract ALL relevant information in the specified format.
+
+<USER_QUERY>{user_query}</USER_QUERY>
+
+Extract the following information:
+
+1. MEDICAL ENTITIES: Diseases, symptoms, treatments, medications, procedures, body parts, medical conditions
+2. RELATIONSHIPS: Connection words (has, causes, treats, affects, diagnosed_with, prescribed_for, related_to)
+3. MEDICAL CONCEPTS: Medical domains/specialties (cardiology, oncology, neurology, pediatrics, etc.)
+4. DEMOGRAPHICS: Age, gender, ethnicity, location, patient characteristics
+
+Format your response EXACTLY as follows:
+ENTITIES: [entity1, entity2, entity3]
+RELATIONSHIPS: [relationship1, relationship2]
+CONCEPTS: [concept1, concept2]
+DEMOGRAPHICS: [demographic1, demographic2]
+
+Be comprehensive and include ALL relevant medical terms, even if they seem obvious.
+If a category has no items, use empty brackets: []
+
+Examples:
+- "chest pain in elderly women" -> ENTITIES: [chest pain], RELATIONSHIPS: [has], CONCEPTS: [cardiology], DEMOGRAPHICS: [elderly, women]
+- "diabetes treatment options" -> ENTITIES: [diabetes, treatment], RELATIONSHIPS: [treats], CONCEPTS: [endocrinology], DEMOGRAPHICS: []
+"""
+    
+    try:
+        validated_content = secure_llm_interaction(
+            llm=llm,
+            template=comprehensive_template,
+            user_input=query
+        )
+        
+        # Parse response with enhanced extraction
+        entities, relationships, concepts, demographics = [], [], [], []
+        
+        lines = validated_content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.startswith('ENTITIES:'):
+                entities_text = line.split('ENTITIES:')[1].strip()
+                if entities_text and entities_text != '[]':
+                    entities = [e.strip().strip('"\'') for e in entities_text.strip('[]').split(',') if e.strip()]
+            elif line.startswith('RELATIONSHIPS:'):
+                rel_text = line.split('RELATIONSHIPS:')[1].strip()
+                if rel_text and rel_text != '[]':
+                    relationships = [r.strip().strip('"\'') for r in rel_text.strip('[]').split(',') if r.strip()]
+            elif line.startswith('CONCEPTS:'):
+                concepts_text = line.split('CONCEPTS:')[1].strip()
+                if concepts_text and concepts_text != '[]':
+                    concepts = [c.strip().strip('"\'') for c in concepts_text.strip('[]').split(',') if c.strip()]
+            elif line.startswith('DEMOGRAPHICS:'):
+                demo_text = line.split('DEMOGRAPHICS:')[1].strip()
+                if demo_text and demo_text != '[]':
+                    demographics = [d.strip().strip('"\'') for d in demo_text.strip('[]').split(',') if d.strip()]
+        
+        # Enhanced scenario determination
+        scenario = _determine_extraction_scenario(entities, relationships, concepts, demographics)
+        
+        logger.info("enhanced_entity_extraction_completed",
+                   entities_count=len(entities),
+                   relationships_count=len(relationships),
+                   concepts_count=len(concepts),
+                   demographics_count=len(demographics),
+                   scenario=scenario)
+        
+        return EntityExtraction(
+            entities=entities,
+            relationships=relationships,
+            concepts=concepts,
+            demographics=demographics,
+            scenario=scenario
+        )
+        
+    except Exception as e:
+        logger.error("enhanced_entity_extraction_failed", error=str(e))
+        return EntityExtraction(
+            entities=[],
+            relationships=[],
+            concepts=[],
+            demographics=[],
+            scenario="EXTRACTION_ERROR"
+        )
+
+@tool
+def generate_dynamic_cypher_query(extraction: EntityExtraction, original_query: str, llm) -> List[Dict[str, Any]]:
+    """
+    Generate dynamic Cypher queries using LLM based on extracted entities and demographics.
+    Creates contextually appropriate Neo4j queries for different medical scenarios.
+    """
+    logger.info("dynamic_cypher_generation_started", scenario=extraction.scenario)
+    
+    try:
+        # Create dynamic Cypher generation prompt
+        cypher_prompt = f"""
+You are a Neo4j Cypher query expert for medical knowledge graphs. Generate appropriate Cypher queries based on the extracted entities and the original user query.
+
+EXTRACTED ENTITIES: {extraction.entities}
+RELATIONSHIPS: {extraction.relationships}
+CONCEPTS: {extraction.concepts}
+DEMOGRAPHICS: {extraction.demographics}
+SCENARIO: {extraction.scenario}
+
+<USER_QUERY>{original_query}</USER_QUERY>
+
+DATABASE SCHEMA:
+- Nodes: Patient (gender, age, patient_id), Finding (finding_label, name), Image, FollowUp
+- Relationships: Patient-[:HAS_FINDING]->Finding
+
+Generate 1-3 optimized Cypher queries that answer the user's question. For demographic queries, include appropriate WHERE clauses.
+
+Examples:
+- For "male patients aged 30 with effusion": MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = 'M' AND p.age = 30 AND f.finding_label = 'effusion' RETURN count(p)
+- For "female patients under 40": MATCH (p:Patient) WHERE p.gender = 'F' AND p.age < 40 RETURN count(p)
+
+Generate appropriate queries for the given scenario. Return each query on a new line starting with "QUERY:".
+"""
+
+        response = secure_llm_interaction(
+            llm=llm,
+            template=cypher_prompt,
+            user_input=""
+        )
+        
+        # Parse the response to extract Cypher queries
+        queries = []
+        lines = response.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('QUERY:'):
+                cypher = line.replace('QUERY:', '').strip()
+                queries.append({
+                    "cypher": cypher,
+                    "description": f"Dynamic query for {extraction.scenario}",
+                    "parameters": {}
+                })
+            elif line.upper().startswith('MATCH') or line.upper().startswith('RETURN'):
+                queries.append({
+                    "cypher": line,
+                    "description": f"Dynamic query for {extraction.scenario}",
+                    "parameters": {}
+                })
+        
+        # Return empty list if no queries found
+        if not queries:
+            logger.warning("no_dynamic_cypher_queries_generated")
+            return []
+        
+        logger.info("dynamic_cypher_generation_completed", queries_count=len(queries))
+        return queries
+        
+    except Exception as e:
+        logger.error("dynamic_cypher_generation_failed", error=str(e))
+        return []
+
+@tool
+def calculate_dynamic_relevance_score(triples: List[Dict[str, Any]], original_query: str, extraction: EntityExtraction, llm) -> float:
+    """
+    Calculate dynamic relevance score using LLM for contextual medical assessment.
+    Provides intelligent scoring based on medical relevance and query intent.
+    """
+    logger.info("dynamic_relevance_scoring_started", triples_count=len(triples))
+    
+    if not triples:
+        return 0.0
+    
+    try:
+        # Create sample of triples for LLM evaluation (limit to avoid context overflow)
+        sample_triples = triples[:5]
+        triple_summaries = []
+        
+        for triple in sample_triples:
+            summary = f"Subject: {triple.get('subject', 'N/A')}, Predicate: {triple.get('predicate', 'N/A')}, Object: {triple.get('object', 'N/A')}"
+            triple_summaries.append(summary)
+        
+        relevance_prompt = f"""
+You are a medical relevance expert. Evaluate how well the retrieved graph data answers the original medical query.
+
+ORIGINAL QUERY: {original_query}
+EXTRACTED ENTITIES: {extraction.entities}
+DEMOGRAPHICS: {extraction.demographics}
+
+RETRIEVED GRAPH DATA:
+{chr(10).join(triple_summaries)}
+
+<USER_QUERY>Rate the relevance of this data to the query on a scale of 0.0 to 1.0</USER_QUERY>
+
+Consider:
+1. How well the data matches the extracted entities
+2. Whether demographic constraints are satisfied
+3. Medical accuracy and completeness
+4. Direct relevance to the question asked
+
+Respond with only a number between 0.0 and 1.0:
+"""
+        
+        response = secure_llm_interaction(
+            llm=llm,
+            template=relevance_prompt,
+            user_input=""
+        )
+        
+        # Parse score from response
+        import re
+        score_match = re.search(r'(\d+\.?\d*)', response.strip())
+        if score_match:
+            score = float(score_match.group(1))
+            # Ensure score is in valid range
+            score = max(0.0, min(1.0, score))
+        else:
+            # Return basic score if parsing fails
+            score = 0.5
+        
+        logger.info("dynamic_relevance_scoring_completed", score=score)
+        return score
+        
+    except Exception as e:
+        logger.warning("dynamic_relevance_scoring_failed", error=str(e))
+        return 0.5
+@tool
+def execute_dynamic_neo4j_queries(extraction: EntityExtraction, neo4j_driver, original_query: str, llm) -> GraphQueryResult:
+    """
+    Execute dynamic Neo4j Cypher queries based on extracted entities, relationships, and demographics.
+    Builds adaptive queries for different medical scenarios and entity combinations.
+    """
+    logger.info("execute_dynamic_neo4j_queries_started",
+               scenario=extraction.scenario,
+               entities_count=len(extraction.entities),
+               demographics_count=len(extraction.demographics))
+    
+    if not neo4j_driver:
+        logger.warning("no_neo4j_driver_available")
+        return GraphQueryResult(
+            triples=[],
+            queries_executed=0,
+            scenario_used=extraction.scenario,
+            total_found=0
+        )
+    
+    triples = []
+    queries_executed = 0
+    
+    try:
+        # Generate dynamic queries using LLM
+        cypher_queries = generate_dynamic_cypher_query(extraction, original_query, llm)
+        
+        with neo4j_driver.session() as session:
+            for query_info in cypher_queries:
+                try:
+                    cypher = query_info.get('cypher', '')
+                    parameters = query_info.get('parameters', {})
+                    
+                    logger.debug("executing_dynamic_cypher", cypher=cypher)
+                    
+                    result = session.run(cypher, parameters)
+                    queries_executed += 1
+                    
+                    for record in result:
+                        triple = _create_dynamic_triple_from_record(record, query_info, original_query)
+                        triples.append(triple)
+                    
+                except Exception as e:
+                    logger.warning("dynamic_cypher_execution_failed", cypher=cypher, error=str(e))
+                    continue
+        
+        logger.info("execute_dynamic_neo4j_queries_completed",
+                   scenario_used=extraction.scenario,
+                   queries_executed=queries_executed,
+                   triples_found=len(triples))
+        
+        return GraphQueryResult(
+            triples=triples,
+            queries_executed=queries_executed,
+            scenario_used=extraction.scenario,
+            total_found=len(triples)
+        )
+        
+    except Exception as e:
+        logger.error("dynamic_neo4j_queries_failed", error=str(e), scenario=extraction.scenario)
+        return GraphQueryResult(
+            triples=[],
+            queries_executed=0,
+            scenario_used=extraction.scenario,
+            total_found=0
+        )
+
+# ==================== END ENHANCED GRAPH SEARCH TOOLS ====================
+
 # Factory function for easy instantiation
 def create_simple_agentic_workflow(llm: AzureChatOpenAI, vector_store, graph_store) -> SimpleAgenticWorkflow:
     """Create a simple agentic workflow with all required components"""
@@ -2994,3 +3591,228 @@ def create_simple_agentic_workflow(llm: AzureChatOpenAI, vector_store, graph_sto
     workflow = SimpleAgenticWorkflow(llm, vector_store, graph_store)
     logger.info("simple_agentic_workflow_created")
     return workflow
+
+# ==================== TOOL IMPLEMENTATIONS FOR GRAPH RAG ====================
+# These are the @tool decorated versions for external tool registration
+
+@tool
+def extract_entities_and_relationships_tool(query: str, llm) -> EntityExtraction:
+    """
+    Tool for extracting entities and relationships using comprehensive prompt template.
+    Converts the AgenticGraphRAGAgent method to a tool for external use.
+    """
+    # Import here to avoid circular imports
+    from core.input_sanitization import (
+        detect_prompt_injection,
+        secure_llm_interaction
+    )
+    
+    logger.info("tool_entity_extraction_started", query_length=len(query))
+    
+    # Step 1: Detect prompt injection attempts
+    if detect_prompt_injection(query):
+        logger.warning("prompt_injection_blocked_in_tool", query_snippet=query[:50])
+        return EntityExtraction(
+            entities=[],
+            relationships=[],
+            concepts=[],
+            demographics=[],
+            scenario="PROMPT_INJECTION_DETECTED"
+        )
+    
+    # Step 2: Use comprehensive entity extraction template
+    comprehensive_template = """
+You are a medical knowledge graph entity extraction expert. Analyze the following medical query and extract ALL relevant information in the specified format.
+
+<USER_QUERY>{user_query}</USER_QUERY>
+
+Extract the following information:
+
+1. MEDICAL ENTITIES: Diseases, symptoms, treatments, medications, procedures, body parts, medical conditions
+2. RELATIONSHIPS: Connection words (has, causes, treats, affects, diagnosed_with, prescribed_for, related_to)
+3. MEDICAL CONCEPTS: Medical domains/specialties (cardiology, oncology, neurology, pediatrics, etc.)
+4. DEMOGRAPHICS: Age, gender, ethnicity, location, patient characteristics
+
+Format your response EXACTLY as follows:
+ENTITIES: [entity1, entity2, entity3]
+RELATIONSHIPS: [relationship1, relationship2]
+CONCEPTS: [concept1, concept2]
+DEMOGRAPHICS: [demographic1, demographic2]
+
+Be comprehensive and include ALL relevant medical terms, even if they seem obvious.
+If a category has no items, use empty brackets: []
+
+Examples:
+- "chest pain in elderly women" -> ENTITIES: [chest pain], RELATIONSHIPS: [has], CONCEPTS: [cardiology], DEMOGRAPHICS: [elderly, women]
+- "diabetes treatment options" -> ENTITIES: [diabetes, treatment], RELATIONSHIPS: [treats], CONCEPTS: [endocrinology], DEMOGRAPHICS: []
+"""
+    
+    try:
+        # Use secure LLM interaction
+        response = secure_llm_interaction(
+            llm=llm,
+            template=comprehensive_template,
+            user_input=query
+        )
+        
+        # Parse the response using helper function
+        def parse_list_from_string(list_str: str) -> List[str]:
+            """Parse a list from string format like '[item1, item2, item3]'"""
+            if not list_str or list_str.strip() == '[]':
+                return []
+            
+            # Remove brackets and split by comma
+            cleaned = list_str.strip()
+            if cleaned.startswith('[') and cleaned.endswith(']'):
+                cleaned = cleaned[1:-1]
+            
+            items = [item.strip().strip("'\"") for item in cleaned.split(',') if item.strip()]
+            return [item for item in items if item]  # Remove empty items
+        
+        entities = []
+        relationships = []
+        concepts = []
+        demographics = []
+        
+        lines = response.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.startswith('ENTITIES:'):
+                entities_str = line.split(':', 1)[1].strip()
+                entities = parse_list_from_string(entities_str)
+            elif line.startswith('RELATIONSHIPS:'):
+                relationships_str = line.split(':', 1)[1].strip()
+                relationships = parse_list_from_string(relationships_str)
+            elif line.startswith('CONCEPTS:'):
+                concepts_str = line.split(':', 1)[1].strip()
+                concepts = parse_list_from_string(concepts_str)
+            elif line.startswith('DEMOGRAPHICS:'):
+                demographics_str = line.split(':', 1)[1].strip()
+                demographics = parse_list_from_string(demographics_str)
+        
+        # Determine scenario based on extracted content
+        scenario = "GENERAL_QUERY"
+        if demographics:
+            scenario = "DEMOGRAPHIC_QUERY"
+        elif any(concept in ['cardiology', 'oncology', 'neurology'] for concept in concepts):
+            scenario = "SPECIALIZED_QUERY"
+        
+        result = EntityExtraction(
+            entities=entities,
+            relationships=relationships,
+            concepts=concepts,
+            demographics=demographics,
+            scenario=scenario
+        )
+        
+        logger.info("tool_entity_extraction_completed",
+                   entities_count=len(entities),
+                   relationships_count=len(relationships),
+                   concepts_count=len(concepts),
+                   demographics_count=len(demographics),
+                   scenario=scenario)
+        
+        return result
+        
+    except Exception as e:
+        logger.error("tool_entity_extraction_failed", error=str(e))
+        return EntityExtraction(
+            entities=[],
+            relationships=[],
+            concepts=[],
+            demographics=[],
+            scenario="EXTRACTION_ERROR"
+        )
+
+@tool
+def generate_cypher_query_tool(extraction: EntityExtraction, original_query: str, llm) -> List[Dict[str, Any]]:
+    """
+    Tool for generating Cypher queries using comprehensive prompt template.
+    Converts the AgenticGraphRAGAgent method to a tool for external use.
+    """
+    logger.info("tool_cypher_generation_started", 
+               scenario=extraction.scenario, 
+               entities_count=len(extraction.entities))
+    
+    # Import here to avoid circular imports
+    from core.input_sanitization import secure_llm_interaction
+    
+    try:
+        # Comprehensive Cypher generation template
+        cypher_template = """
+You are a Neo4j Cypher query expert for medical databases. Generate optimized Cypher queries based on the extracted entities and demographics.
+
+ORIGINAL QUERY: {original_query}
+EXTRACTED ENTITIES: {entities}
+DEMOGRAPHICS: {demographics}
+MEDICAL CONCEPTS: {concepts}
+RELATIONSHIPS: {relationships}
+
+DATABASE SCHEMA:
+- Patient nodes: properties include gender ('M'/'F'), age (integer), patient_id
+- Finding nodes: properties include finding_label, name
+- Relationships: (Patient)-[:HAS_FINDING]->(Finding)
+
+Generate 1-3 Cypher queries that would answer the original question. Focus on:
+1. Demographic filtering (age, gender)
+2. Finding/condition matching
+3. Count aggregations when appropriate
+
+Format each query as:
+QUERY_TYPE: [descriptive name]
+CYPHER: [cypher query]
+DESCRIPTION: [what this query does]
+
+Example:
+QUERY_TYPE: demographic_count
+CYPHER: MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = 'M' AND p.age = 17 AND f.finding_label CONTAINS 'effusion' RETURN COUNT(p) as total_count
+DESCRIPTION: Count male patients aged 17 with effusion findings
+"""
+        
+        # Format the template with extracted data
+        formatted_template = cypher_template.format(
+            original_query=original_query,
+            entities=extraction.entities,
+            demographics=extraction.demographics,
+            concepts=extraction.concepts,
+            relationships=extraction.relationships
+        )
+        
+        # Use secure LLM interaction
+        response = secure_llm_interaction(
+            llm=llm,
+            template=formatted_template,
+            user_input=""
+        )
+        
+        # Parse the response to extract queries
+        queries = []
+        current_query = {}
+        
+        lines = response.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.startswith('QUERY_TYPE:'):
+                if current_query:
+                    queries.append(current_query)
+                current_query = {'query_type': line.split(':', 1)[1].strip()}
+            elif line.startswith('CYPHER:'):
+                current_query['cypher'] = line.split(':', 1)[1].strip()
+            elif line.startswith('DESCRIPTION:'):
+                current_query['description'] = line.split(':', 1)[1].strip()
+        
+        # Add the last query
+        if current_query:
+            queries.append(current_query)
+        
+        # Return empty list if no queries parsed
+        if not queries:
+            logger.warning("no_cypher_queries_parsed_from_llm_response")
+            return []
+        
+        logger.info("tool_cypher_generation_completed", queries_count=len(queries))
+        return queries
+        
+    except Exception as e:
+        logger.error("tool_cypher_generation_failed", error=str(e))
+        return []

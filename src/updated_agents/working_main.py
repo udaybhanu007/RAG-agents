@@ -33,8 +33,23 @@ def main():
     print("Using real Azure OpenAI, Qdrant Vector DB, and Neo4j Graph DB")
     print("=" * 80)
     
-    # Test query
-    test_query = "What is cause of cancer?"
+    # Test query - this should be classified as relational/graph
+    test_query = "Total number of male patients ,age equals 17, Finding Labels is effusion?"
+    
+    # Test the enhanced query analysis
+    print("\n🧠 TESTING ENHANCED QUERY ANALYSIS")
+    print("-" * 50)
+    
+    from updated_agents.base_classes import analyze_query_characteristics
+    
+    # Test without LLM first
+    print(f"Query: \"{test_query}\"")
+    result = analyze_query_characteristics(test_query, llm=None)
+    print(f"Analysis (without LLM):")
+    print(f"  Intent: {result.intent}")
+    print(f"  Has Relationships: {result.has_relationships}")
+    print(f"  Should route to: {'GRAPH' if result.intent == 'relational' else 'VECTOR'}")
+    print()
     
     try:
         # Import required components

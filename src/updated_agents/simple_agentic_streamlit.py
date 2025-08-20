@@ -49,7 +49,7 @@ def main():
     
     # Page configuration
     st.set_page_config(
-        page_title="Simple Agentic RAG System",
+        page_title="Hybrid Agentic RAG System",
         page_icon="🤖",
         layout="wide",
         initial_sidebar_state="collapsed"
@@ -61,7 +61,7 @@ def main():
     # App header
     st.markdown("""
     <div style="background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); padding: 1rem; border-radius: 10px; color: white; text-align: center; margin-bottom: 2rem;">
-        <h1>🤖 Simple Agentic RAG System</h1>
+        <h1>🤖 Hybrid Agentic RAG System</h1>
         <p>Autonomous • Learning • Adaptive</p>
     </div>
     """, unsafe_allow_html=True)
@@ -82,33 +82,19 @@ def main():
         # Query input section
         st.subheader("💬 Ask Your Question")
         
-        # Initialize query results in session state
-        if 'query_result' not in st.session_state:
-            st.session_state.query_result = None
-        if 'current_query' not in st.session_state:
-            st.session_state.current_query = ""
-        if 'clear_trigger' not in st.session_state:
-            st.session_state.clear_trigger = 0
+        # Initialize clear counter for forcing text input reset
+        if 'clear_counter' not in st.session_state:
+            st.session_state.clear_counter = 0
         
-        # Handle clear button logic first (before rendering anything)
-        clear_clicked = st.session_state.get('clear_clicked', False)
-        if clear_clicked:
-            st.session_state.current_query = ""
-            st.session_state.query_result = None
-            st.session_state.clear_trigger += 1
-            st.session_state.clear_clicked = False  # Reset the flag
-            st.rerun()
-        
-        # Query input with dynamic key to force recreation on clear
+        # Simple query input with dynamic key to force clearing
         query = st.text_input(
             "Your Query:",
-            value=st.session_state.current_query,
             placeholder="Enter your medical or data analysis query here...",
             help="Ask questions about medical imaging, patient data, or request specific analysis",
-            key=f"query_input_{st.session_state.clear_trigger}"  # Dynamic key
+            key=f"query_input_{st.session_state.clear_counter}"
         )
         
-        # Button row with Search and Clear very close together (below textbox)
+        # Button row with Search and Clear
         col1, col2, col3 = st.columns([0.7, 0.7, 5])
         
         with col1:
@@ -116,46 +102,28 @@ def main():
         
         with col2:
             if st.button("🗑️ Clear", type="secondary"):
-                st.session_state.clear_clicked = True
-                st.rerun()
+                st.session_state.clear_counter += 1  # Increment to change the key
+                st.rerun()  # Rerun to recreate the text input with new key
         
-        # Process query
-        if search_clicked:
-            if query and query.strip():
-                st.session_state.current_query = query.strip()  # Store the query
-                with st.spinner("🤖 Processing with agentic intelligence..."):
-                    try:
-                        result = app.process_query(query.strip())
-                        st.session_state.query_result = result  # Store result
-                        
-                        # Display results
-                        if result.get('error'):
-                            st.error(f"❌ Processing error: {result.get('final_answer', 'Unknown error')}")
-                        else:
-                            st.success("✅ Agentic processing complete!")
-                            
-                            # Main answer (using final_answer key like working_main.py)
-                            st.subheader("📝 Answer")
-                            final_answer = result.get('final_answer', 'No answer generated')
-                            st.write(final_answer)
+        # Process query immediately when search is clicked
+        if search_clicked and query and query.strip():
+            with st.spinner("🤖 Processing with agentic intelligence..."):
+                try:
+                    result = app.process_query(query.strip())
                     
-                    except Exception as e:
-                        st.error(f"❌ Processing Error: {str(e)}")
-        
-        # Display stored results if they exist (after clear or page reload)
-        elif st.session_state.query_result and st.session_state.current_query:
-            result = st.session_state.query_result
-            st.info(f"📋 Previous Query: {st.session_state.current_query}")
-            
-            if result.get('error'):
-                st.error(f"❌ Processing error: {result.get('final_answer', 'Unknown error')}")
-            else:
-                st.success("✅ Agentic processing complete!")
+                    # Display results immediately
+                    if result.get('error'):
+                        st.error(f"❌ Processing error: {result.get('final_answer', 'Unknown error')}")
+                    else:
+                        st.success("✅ Agentic processing complete!")
+                        
+                        # Main answer (using final_answer key like working_main.py)
+                        st.subheader("📝 Answer")
+                        final_answer = result.get('final_answer', 'No answer generated')
+                        st.write(final_answer)
                 
-                # Main answer
-                st.subheader("📝 Answer")
-                final_answer = result.get('final_answer', 'No answer generated')
-                st.write(final_answer)
+                except Exception as e:
+                    st.error(f"❌ Processing Error: {str(e)}")
     
     else:
         # Error state

@@ -843,30 +843,46 @@ You are an expert in medical database routing and query analysis. Analyze the fo
 
 <USER_QUERY>{user_query}</USER_QUERY>
 
-GRAPH DATABASE INDICATORS:
-- Demographics: age, gender, patient characteristics (age=17, male patients, female, elderly)
-- Structured data: "total number", "count of", "how many", exact values, aggregations
-- Relationships: connections between entities, medical relationships
-- Exact matching: "equals", "=", specific criteria matching
-- Patient-specific queries: individual patient data, medical records
-- Finding labels: specific medical findings, diagnoses
+GRAPH DATABASE INDICATORS (STRUCTURED DATA QUERIES):
+- Demographics with filtering: "patients age > 65", "male patients with", "female under 30"
+- Count/aggregation queries: "how many patients have", "total number of cases", "count patients"
+- Specific medical finding queries: "patients with pneumonia", "cases of cardiomegaly"
+- Relationship queries: "patients having both X and Y", "correlation between findings"
+- Structured filtering: exact matches, conditional queries with patient data
 
-VECTOR DATABASE INDICATORS:
-- Conceptual searches: general medical concepts, semantic similarity
-- Document retrieval: research papers, medical literature
-- Broad medical topics: overviews, general information
+VECTOR DATABASE INDICATORS (DOCUMENT/CONCEPT QUERIES):
+- Research questions: "details about", "share the details", "explain", "describe"
+- Methodology queries: "quality control", "construction methods", "implementation"
+- General medical concepts: "what is", "overview of", "information about"
+- Document retrieval: research papers, guidelines, protocols, methodologies
+- Knowledge seeking: conceptual understanding, explanations, definitions
+- Process descriptions: "quality control on", "procedures for", "methods of"
+- Construction/building queries: "construction of", "building", "development of"
 
-ANALYSIS CRITERIA:
-1. Does the query require structured patient data with specific demographic criteria?
-2. Does it ask for exact matches, counts, or aggregations?
-3. Does it involve relationships between medical entities?
-4. Does it require precise filtering by patient characteristics?
+CRITICAL ANALYSIS RULES:
+1. If query asks for CONCEPTUAL information, DETAILS, or EXPLANATIONS → VECTOR
+2. If query seeks RESEARCH/METHODOLOGY/PROCESS details → VECTOR  
+3. If query asks for SPECIFIC PATIENT DATA with demographics → GRAPH
+4. If query needs COUNTING/FILTERING structured patient data → GRAPH
+
+SPECIAL PATTERNS (FORCE VECTOR):
+- "details about/of X" → VECTOR (document retrieval)
+- "share the details" → VECTOR (document retrieval)
+- "quality control on X" → VECTOR (methodology/process)
+- "construction of X" → VECTOR (methodology)
+- "implementation of X" → VECTOR (methodology)
+- "explain X" or "describe X" → VECTOR (conceptual)
+
+SPECIAL PATTERNS (FORCE GRAPH):
+- "patients with X and age Y" → GRAPH (structured filtering)
+- "how many patients" → GRAPH (count aggregation)
+- "total number of cases" → GRAPH (aggregation)
 
 Respond in this EXACT format:
 RECOMMENDATION: [GRAPH|VECTOR|HYBRID]
 CONFIDENCE: [HIGH|MEDIUM|LOW]
 REASONING: [Brief explanation of why this database type is optimal]
-FORCE_GRAPH: [YES|NO] (YES if query absolutely requires graph database)
+FORCE_GRAPH: [YES|NO] (YES only if query absolutely requires patient data filtering)
 PATTERNS: [List 3-5 specific patterns detected in the query]
 SCORE: [0.0-1.0] (How strongly this indicates graph database usage)
 """
@@ -995,6 +1011,28 @@ SCORE: [0.0-1.0] (How strongly this indicates graph database usage)
                    query_type=query_type,
                    complexity=complexity,
                    goal_count=len(execution_goals))
+        
+        # EARLY OVERRIDE: Document/concept queries should go to vector
+        document_indicators = [
+            'construction of', 'details about', 'information about', 'overview of',
+            'explain', 'describe', 'methodology', 'implementation', 'research about',
+            'what is', 'how to', 'guidelines for', 'protocol', 'procedure for',
+            'share the details', 'quality control on', 'development of', 'building'
+        ]
+        
+        query_lower = query.lower()
+        matched_indicators = [ind for ind in document_indicators if ind in query_lower]
+        
+        if matched_indicators:
+            logger.info("document_query_detected_forcing_vector", 
+                       query=query,
+                       matched_indicators=matched_indicators)
+            return SimpleReasoningPlan(
+                query_type=query_type,
+                selected_route='vector',
+                reasoning=f"Document/conceptual query detected - matched patterns: {', '.join(matched_indicators[:3])}",
+                is_learned=False
+            )
         
         # ENHANCED GRAPH DATABASE DETECTION (LLM-POWERED)
         graph_indicators = self._detect_graph_database_patterns(query)

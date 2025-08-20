@@ -183,45 +183,64 @@ def analyze_query_characteristics(query: str, llm=None) -> QueryAnalysis:
     """Enhanced query characteristic analysis using LLM reasoning"""
     logger.info("enhanced_query_analysis_started", query_length=len(query))
     
-    # If no LLM provided, fall back to simple analysis
+    # ALWAYS try to use LLM first - only fall back if absolutely necessary
     if llm is None:
+        logger.warning("no_llm_provided_falling_back_to_simple_analysis")
         return _simple_query_analysis(query)
     
     # Import here to avoid circular imports
     from core.input_sanitization import secure_llm_interaction
     
-    # Enhanced analysis template for intelligent query classification
-    analysis_template = """You are a medical database query analyzer. Analyze this query and classify its characteristics:
+    # Enhanced multi-shot prompting for precise intent classification
+    analysis_template = """You are an expert medical database query analyzer. Your job is to classify queries into the correct intent categories for optimal database routing.
 
 QUERY: {user_query}
 
-Analyze the query for:
+INTENT CLASSIFICATION RULES:
 
-1. INTENT - What is the user trying to accomplish?
-   - 'factual': Simple fact lookup or general medical information
-   - 'relational': Structured data queries involving patient demographics, findings, relationships
-   - 'analytical': Complex analysis, patterns, trends, statistics
-   - 'comparison': Comparing conditions, treatments, or demographics
+🔵 DOCUMENT Intent - Use when query seeks:
+- General medical knowledge: "Tell me symptoms of X", "What is X", "Explain Y"
+- Process/methodology details: "Construction of X", "Quality control on Y", "Implementation of Z"
+- Educational content: "How does X work", "What are signs of Y"
+- Research information: "Details about X", "Information on Y"
+- Conceptual understanding: "Definition of X", "Characteristics of Y"
 
-2. COMPLEXITY - How complex is the query?
-   - 'simple': Basic questions (under 10 words, single concept)
-   - 'complex': Multi-part questions, multiple criteria, aggregations
+🔴 RELATIONAL Intent - Use ONLY when query involves:
+- Patient counting: "How many patients have X"
+- Patient filtering: "Patients with X and age > Y", "Male patients with Z"
+- Patient aggregations: "Total number of patients", "Count of cases where"
+- Demographic filtering: "Patients age = 65 with condition X"
 
-3. DATABASE INDICATORS - Does this query suggest structured database operations?
-   Look for: counts, totals, demographics (age, gender), specific medical findings, exact criteria, filtering
-   
-4. RELATIONSHIPS - Does the query involve relationships between entities?
-   Patient-Finding relationships, demographic-medical correlations, etc.
+🟡 ANALYTICAL Intent - Complex analysis:
+- Statistical analysis, patterns, trends across patient populations
+- Multi-dimensional analysis requiring both databases
 
-IMPORTANT: Queries asking for "total number", "count", specific demographics (age=17, male), 
-and specific medical findings (effusion) are RELATIONAL queries needing structured database access.
+🟢 COMPARISON Intent - Direct comparisons:
+- "Compare X vs Y", "Difference between A and B"
 
-Format your response as:
-INTENT: [factual|relational|analytical|comparison]
-COMPLEXITY: [simple|complex]  
-ENTITY_COUNT: [number of medical entities/concepts]
+🟠 FACTUAL Intent - Simple facts:
+- Basic medical facts without complexity
+
+CRITICAL DECISION POINTS:
+1. Does the query ask for PATIENT DATA with specific criteria? → RELATIONAL
+2. Does the query seek GENERAL KNOWLEDGE or CONCEPTS? → DOCUMENT  
+3. Does the query need EDUCATIONAL/RESEARCH content? → DOCUMENT
+4. Does the query involve COUNTING real patients? → RELATIONAL
+
+EXAMPLES:
+- "Tell me symptoms of liver disease" → DOCUMENT (general knowledge)
+- "What is pneumonia" → DOCUMENT (educational content)
+- "Patients with pneumonia and age > 65" → RELATIONAL (patient filtering)
+- "How many patients have diabetes" → RELATIONAL (patient counting)
+- "Construction of hospital database" → DOCUMENT (methodology)
+- "Quality control on disease labeling" → DOCUMENT (process information)
+
+Respond EXACTLY in this format:
+INTENT: [document|relational|analytical|comparison|factual]
+COMPLEXITY: [simple|complex]
+ENTITY_COUNT: [number]
 HAS_RELATIONSHIPS: [true|false]
-REASONING: [brief explanation of classification]"""
+REASONING: [One sentence explaining why this intent was chosen]"""
 
     try:
         response = secure_llm_interaction(
@@ -232,18 +251,19 @@ REASONING: [brief explanation of classification]"""
             temperature=0.1
         )
         
-        # Parse LLM response
+        # Parse LLM response with robust parsing
         intent = 'factual'
         complexity = 'simple'
         entity_count = 1
         has_relationships = False
+        reasoning = ""
         
         lines = response.split('\n')
         for line in lines:
             line = line.strip().upper()
             if line.startswith('INTENT:'):
                 intent_value = line.split('INTENT:')[1].strip().lower()
-                if intent_value in ['factual', 'relational', 'analytical', 'comparison']:
+                if intent_value in ['factual', 'document', 'relational', 'analytical', 'comparison']:
                     intent = intent_value
             elif line.startswith('COMPLEXITY:'):
                 complexity_value = line.split('COMPLEXITY:')[1].strip().lower()
@@ -257,17 +277,12 @@ REASONING: [brief explanation of classification]"""
             elif line.startswith('HAS_RELATIONSHIPS:'):
                 rel_value = line.split('HAS_RELATIONSHIPS:')[1].strip().lower()
                 has_relationships = rel_value in ['true', 'yes', '1']
+            elif line.startswith('REASONING:'):
+                reasoning = line.split('REASONING:')[1].strip()
         
-        # Additional logic for structured database queries
-        query_lower = query.lower()
-        if any(keyword in query_lower for keyword in [
-            'total number', 'count', 'how many', 'number of',
-            'age equals', 'age =', 'gender', 'male', 'female',
-            'finding label', 'finding', 'patient', 'diagnosis'
-        ]):
-            intent = 'relational'
-            has_relationships = True
-            
+        # TRUST THE LLM - No static pattern overrides
+        # The LLM should be intelligent enough to classify correctly
+        
         result = QueryAnalysis(
             intent=intent,
             complexity=complexity,
@@ -280,51 +295,58 @@ REASONING: [brief explanation of classification]"""
                    complexity=complexity, 
                    entity_count=result.entity_count,
                    has_relationships=has_relationships,
+                   reasoning=reasoning,
                    llm_used=True)
         
         return result
         
     except Exception as e:
-        logger.warning("llm_query_analysis_failed", error=str(e))
+        logger.error("llm_query_analysis_failed", error=str(e))
+        # Only fall back if LLM completely fails
+        logger.warning("falling_back_to_simple_analysis_due_to_llm_failure")
         return _simple_query_analysis(query)
 
 def _simple_query_analysis(query: str) -> QueryAnalysis:
-    """Fallback simple query analysis when LLM is not available"""
+    """Minimal fallback query analysis when LLM is completely unavailable"""
     logger.info("simple_query_analysis_started", query_length=len(query))
     
     query_lower = query.lower()
     words = query.split()
     
-    # Enhanced intent detection with database query patterns
-    if any(word in query_lower for word in ['compare', 'versus', 'vs', 'difference']):
-        intent = 'comparison'
-    elif any(word in query_lower for word in ['relationship', 'correlation', 'association']):
-        intent = 'relational'
-    elif any(word in query_lower for word in ['analyze', 'pattern', 'trend', 'statistics']):
-        intent = 'analytical'
-    # Enhanced detection for structured database queries
-    elif any(keyword in query_lower for keyword in [
-        'total number', 'count', 'how many', 'number of',
-        'age equals', 'age =', 'gender', 'male', 'female',
-        'finding label', 'finding', 'patient', 'diagnosis'
+    # Minimal heuristic-based classification - NO STATIC PATTERNS
+    # Just basic intent detection based on query structure
+    
+    # Check for obvious patient data queries
+    if any(phrase in query_lower for phrase in [
+        'how many patients', 'total patients', 'count of patients',
+        'patients with', 'patients age', 'patients having'
     ]):
         intent = 'relational'
+        has_relationships = True
+    # Check for comparison queries
+    elif any(word in query_lower for word in ['compare', 'versus', 'vs', 'difference']):
+        intent = 'comparison'
+        has_relationships = True
+    # Check for analytical queries
+    elif any(word in query_lower for word in ['analyze', 'analysis', 'pattern', 'trend', 'statistics']):
+        intent = 'analytical'
+        has_relationships = True
+    # Everything else defaults to document/factual
     else:
-        intent = 'factual'
+        # Simple heuristic: questions starting with common knowledge-seeking words
+        if any(query_lower.startswith(starter) for starter in [
+            'tell me', 'what is', 'what are', 'how does', 'explain', 'describe'
+        ]):
+            intent = 'document'
+        else:
+            intent = 'factual'
+        has_relationships = False
     
-    # Determine complexity
-    complexity = 'complex' if len(words) > 15 else 'simple'
+    # Simple complexity assessment
+    complexity = 'complex' if len(words) > 15 or ' and ' in query_lower else 'simple'
     
-    # Count entities (enhanced heuristic)
-    entity_indicators = ['patient', 'disease', 'condition', 'treatment', 'diagnosis', 
-                        'finding', 'effusion', 'pneumonia', 'male', 'female', 'age']
-    entity_count = sum(1 for indicator in entity_indicators if indicator in query_lower)
-    
-    # Enhanced relationship detection
-    relationship_words = ['relationship', 'correlation', 'association', 'compare', 'versus']
-    database_patterns = ['total number', 'count', 'age equals', 'finding label']
-    has_relationships = (any(word in query_lower for word in relationship_words) or 
-                        any(pattern in query_lower for pattern in database_patterns))
+    # Basic entity count
+    entity_count = min(len([w for w in words if len(w) > 4]), 5)  # Rough estimate
     
     result = QueryAnalysis(
         intent=intent,
@@ -338,7 +360,8 @@ def _simple_query_analysis(query: str) -> QueryAnalysis:
                complexity=complexity, 
                entity_count=result.entity_count,
                has_relationships=has_relationships,
-               llm_used=False)
+               llm_used=False,
+               fallback_reason="llm_unavailable")
     
     return result
 

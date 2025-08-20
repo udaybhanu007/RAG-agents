@@ -143,7 +143,8 @@ class ExecutionPlanner:
     @traceable(**get_traceable_config("ExecutionPlanner"))
     def create_comprehensive_plan(self, analysis: ComprehensiveQueryAnalysis,
                                 selection: ToolSelectionReasoning,
-                                base_plan: ToolExecutionPlan) -> ToolExecutionPlan:
+                                base_plan: ToolExecutionPlan,
+                                trace_id: str = None) -> ToolExecutionPlan:
         """
         Create comprehensive execution plan with contingencies
         
@@ -151,13 +152,15 @@ class ExecutionPlanner:
             analysis: Query analysis
             selection: Tool selection reasoning
             base_plan: Base execution plan
+            trace_id: Optional trace ID for logging
             
         Returns:
             Enhanced execution plan with contingencies
         """
         logger.info("comprehensive_plan_creation_started",
                    analysis_id=analysis.query_id,
-                   base_plan_id=base_plan.plan_id)
+                   base_plan_id=base_plan.plan_id,
+                   trace_id=trace_id)
         
         try:
             # Create detailed execution steps
@@ -187,12 +190,15 @@ class ExecutionPlanner:
             logger.info("comprehensive_plan_created",
                        enhanced_plan_id=enhanced_plan.plan_id,
                        total_steps=len(execution_steps),
-                       contingency_count=len(contingency_strategies))
+                       contingency_count=len(contingency_strategies),
+                       trace_id=trace_id)
             
             return enhanced_plan
             
         except Exception as e:
-            logger.error("comprehensive_plan_creation_failed", error=str(e))
+            logger.error("comprehensive_plan_creation_failed", 
+                        error=str(e),
+                        trace_id=trace_id)
             # Return base plan if enhancement fails
             return base_plan
     

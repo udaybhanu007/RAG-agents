@@ -272,20 +272,22 @@ class DynamicToolSelector:
                    available_tools=list(self.available_tools.keys()))
     
     @traceable(**get_traceable_config("DynamicToolSelector"))
-    def select_tools_with_reasoning(self, analysis: ComprehensiveQueryAnalysis) -> ToolSelectionReasoning:
+    def select_tools_with_reasoning(self, analysis: ComprehensiveQueryAnalysis, trace_id: str = None) -> ToolSelectionReasoning:
         """
         Select tools using comprehensive reasoning about query requirements
         and tool capabilities
         
         Args:
             analysis: Comprehensive query analysis
+            trace_id: Optional trace ID for logging
             
         Returns:
             ToolSelectionReasoning: Detailed tool selection with reasoning
         """
         logger.info("tool_selection_reasoning_started", 
                    analysis_id=analysis.query_id,
-                   query_complexity=analysis.complexity.complexity_level)
+                   query_complexity=analysis.complexity.complexity_level,
+                   trace_id=trace_id)
         
         try:
             # Step 1: Assess each tool's capability for this query
@@ -307,12 +309,15 @@ class DynamicToolSelector:
             
             logger.info("tool_selection_reasoning_completed",
                        selected_tools=selection_reasoning.selected_tools,
-                       primary_strategy=selection_reasoning.tool_order[0] if selection_reasoning.tool_order else "none")
+                       primary_strategy=selection_reasoning.tool_order[0] if selection_reasoning.tool_order else "none",
+                       trace_id=trace_id)
             
             return selection_reasoning
             
         except Exception as e:
-            logger.error("tool_selection_reasoning_failed", error=str(e))
+            logger.error("tool_selection_reasoning_failed", 
+                        error=str(e),
+                        trace_id=trace_id)
             # Return fallback selection
             return self._create_fallback_selection(analysis)
     

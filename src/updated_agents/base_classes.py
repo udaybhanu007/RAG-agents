@@ -7,6 +7,8 @@ without any dependencies on the original agents folder.
 
 import os
 import sys
+import time
+import uuid
 from typing import Dict, Any, List, Optional, Callable
 from enum import Enum
 from datetime import datetime
@@ -26,23 +28,42 @@ logger = get_logger("base_classes")
 
 # Base workflow state class
 class WorkflowState(dict):
-    """Simple workflow state dictionary with helper methods"""
+    """Simple workflow state dictionary with helper methods and trace_id support"""
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if "timestamp" not in self:
             self["timestamp"] = datetime.now().isoformat()
-        logger.debug("workflow_state_initialized", state_keys=list(self.keys()))
+        if "trace_id" not in self:
+            self["trace_id"] = self.generate_trace_id()
+        logger.debug("workflow_state_initialized", 
+                    state_keys=list(self.keys()), 
+                    trace_id=self.get("trace_id"))
+    
+    @staticmethod
+    def generate_trace_id() -> str:
+        """Generate a unique trace ID for workflow tracking"""
+        timestamp = int(time.time())
+        unique_id = str(uuid.uuid4())[:8]
+        return f"trace_{timestamp}_{unique_id}"
     
     def add_result(self, key: str, value: Any):
         """Add a result to the state"""
         self[key] = value
-        logger.debug("workflow_state_updated", key=key, value_type=type(value).__name__)
+        trace_id = self.get("trace_id")
+        logger.debug("workflow_state_updated", 
+                    key=key, 
+                    value_type=type(value).__name__, 
+                    trace_id=trace_id)
     
     def get_result(self, key: str, default: Any = None):
         """Get a result from the state"""
         result = self.get(key, default)
-        logger.debug("workflow_state_accessed", key=key, found=key in self)
+        trace_id = self.get("trace_id")
+        logger.debug("workflow_state_accessed", 
+                    key=key, 
+                    found=key in self, 
+                    trace_id=trace_id)
         return result
 
 # Agent roles enumeration
@@ -56,12 +77,14 @@ class AgentRole(Enum):
 
 # Base agent class
 class SecureAgentBase(ABC):
-    """Simple secure base class for agents"""
+    """Simple secure base class for agents with trace_id support"""
     
     def __init__(self, role: AgentRole):
         self.role = role
         self.agent_id = f"{role.value}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        logger.info("agent_initialized", role=role.value, agent_id=self.agent_id)
+        logger.info("agent_initialized", 
+                   role=role.value, 
+                   agent_id=self.agent_id)
     
     def get_agent_info(self) -> Dict[str, Any]:
         """Get agent information"""
@@ -70,8 +93,23 @@ class SecureAgentBase(ABC):
             "agent_id": self.agent_id,
             "status": "active"
         }
-        logger.debug("agent_info_requested", agent_id=self.agent_id, role=self.role.value)
+        logger.debug("agent_info_requested", 
+                    agent_id=self.agent_id, 
+                    role=self.role.value)
         return info
+    
+    def log_action(self, action: str, trace_id: str = None, **kwargs):
+        """Log agent action with trace_id"""
+        log_data = {
+            "agent": self.role.value,
+            "agent_id": self.agent_id,
+            "action": action,
+            **kwargs
+        }
+        if trace_id:
+            log_data["trace_id"] = trace_id
+        
+        logger.info(f"{self.role.value}_{action}", **log_data)
 
 # Pydantic models for structured data
 class QueryAnalysis(BaseModel):

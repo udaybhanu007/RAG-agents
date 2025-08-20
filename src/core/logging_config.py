@@ -92,6 +92,12 @@ def configure_logging(
         level=getattr(logging, log_level, logging.INFO)
     )
     
+    # Suppress HTTP client logging (httpx, requests, urllib3)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("requests.packages.urllib3").setLevel(logging.WARNING)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    
     # Create and return logger
     logger = structlog.get_logger("multi_agent_rag")
     

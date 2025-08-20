@@ -109,21 +109,6 @@ def main():
                     
                     except Exception as e:
                         st.error(f"❌ Processing Error: {str(e)}")
-        
-        # Example queries
-        with st.expander("💡 Try These Examples"):
-            examples = [
-                "What is NIH Chest X-ray?",
-                "Main findings in X-ray analysis in  healthcare?", 
-                "Male patients with effusion",
-                "Dataset age relationships"
-            ]
-            
-            for example in examples:
-                if st.button(f"📝 {example}", key=f"example_{examples.index(example)}"):
-                    # Use query_params instead of deprecated experimental_set_query_params
-                    st.query_params.update({"query": example})
-                    st.rerun()
     
     else:
         # Error state

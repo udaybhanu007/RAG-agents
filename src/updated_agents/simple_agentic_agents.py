@@ -120,12 +120,20 @@ You are a medical database assistant. Your job is to answer based on the provide
 Context Information from Database:
 {combined_context}
 
-INSTRUCTIONS:
-1. Answer using the information from the provided context
-2. If the context contains relevant information, provide a comprehensive answer based on that data
-3. If the context doesn't contain sufficient information about the query, respond with: "No data found in our medical database for this query."
-4. Do not add external medical knowledge not present in the context
-5. You may use the phrase "Based on the provided information" or "According to the database context"
+CRITICAL INSTRUCTIONS FOR SYNTHESIS:
+1. The context above ALWAYS contains valid data from our medical database - NEVER say "No data found"
+2. Answer using the information from the provided context
+3. If any context is provided, there IS data in our database - provide a comprehensive answer based on that data
+4. You may use the phrase "Based on the provided information" or "According to the database context"
+
+SPECIAL HANDLING FOR COUNT QUERIES:
+- When you see "Total count: X" in the context, THIS IS THE ANSWER to count queries
+- Individual examples (Source 2, Source 3, etc.) are samples, NOT the complete count
+- Always prioritize the "Total count" value over counting individual examples
+- For demographic queries asking "how many", report the total count clearly
+- Example: If context shows "Total count: 604", answer should include "604" as the count
+
+NEVER RESPOND WITH "No data found" IF ANY CONTEXT IS PROVIDED.
 
 Database Response:
 """
@@ -2409,9 +2417,19 @@ You are a medical knowledge graph entity extraction expert. Analyze the followin
 Extract the following information:
 
 1. MEDICAL ENTITIES: Diseases, symptoms, treatments, medications, procedures, body parts, medical conditions
+   **SPECIAL HANDLING FOR COMPOUND CONDITIONS**: If query mentions multiple conditions connected by "and" 
+   (e.g., "Consolidation and Effusion"), extract each condition as a SEPARATE entity, not as one compound entity.
+   
 2. RELATIONSHIPS: Connection words (has, causes, treats, affects, diagnosed_with, prescribed_for, related_to)
+   **FOR COMPOUND CONDITIONS**: When multiple conditions are mentioned with "and", use relationship "has_multiple"
+   
 3. MEDICAL CONCEPTS: Medical domains/specialties (cardiology, oncology, neurology, pediatrics, etc.)
 4. DEMOGRAPHICS: Age, gender, ethnicity, location, patient characteristics
+
+CRITICAL RULES FOR COMPOUND CONDITIONS:
+- "Consolidation and Effusion" -> ENTITIES: [Consolidation, Effusion] (separate, not compound)
+- "Pneumonia and Cardiomegaly" -> ENTITIES: [Pneumonia, Cardiomegaly] (separate entities)
+- This enables proper Cypher generation for patients having BOTH conditions
 
 Format your response EXACTLY as follows:
 ENTITIES: [entity1, entity2, entity3]
@@ -2425,6 +2443,8 @@ If a category has no items, use empty brackets: []
 Examples:
 - "chest pain in elderly women" -> ENTITIES: [chest pain], RELATIONSHIPS: [has], CONCEPTS: [cardiology], DEMOGRAPHICS: [elderly, women]
 - "diabetes treatment options" -> ENTITIES: [diabetes, treatment], RELATIONSHIPS: [treats], CONCEPTS: [endocrinology], DEMOGRAPHICS: []
+- "Consolidation and Effusion in patients" -> ENTITIES: [Consolidation, Effusion, patients], RELATIONSHIPS: [has_multiple], CONCEPTS: [pulmonology], DEMOGRAPHICS: []
+- "Pneumonia and Cardiomegaly" -> ENTITIES: [Pneumonia, Cardiomegaly], RELATIONSHIPS: [has_multiple], CONCEPTS: [pulmonology, cardiology], DEMOGRAPHICS: []
 """
         
         try:
@@ -2522,6 +2542,19 @@ CRITICAL RULES:
 2. Use CONTAINS for partial matching of finding labels
 3. Use COUNT(DISTINCT p) for patient counts to avoid duplicates
 4. Always use exact property names from schema above
+5. **COMPOUND FINDINGS**: If query mentions multiple findings connected by "and" (e.g., "Consolidation and Effusion"), 
+   generate queries for patients having BOTH conditions separately, not as a single compound label
+6. **MULTIPLE CONDITIONS**: Use separate MATCH patterns for each condition when "and" appears between medical terms
+
+SPECIAL HANDLING FOR COMPOUND FINDINGS:
+- Query: "patients with Consolidation and Effusion" should generate:
+  MATCH (p:Patient)-[:HAS_FINDING]->(f1:Finding), (p)-[:HAS_FINDING]->(f2:Finding)
+  WHERE toLower(f1.finding_label) CONTAINS 'consolidation' 
+  AND toLower(f2.finding_label) CONTAINS 'effusion'
+  RETURN COUNT(DISTINCT p) as total_count
+
+- NOT: WHERE f.finding_label = 'Consolidation and Effusion' (exact match)
+- NOT: WHERE f.finding_label CONTAINS 'consolidation and effusion' (single label)
 
 Generate 1-3 Cypher queries that would answer the original question. Focus on:
 1. Demographic filtering (age, gender)
@@ -2533,10 +2566,18 @@ QUERY_TYPE: [descriptive name]
 CYPHER: [cypher query]
 DESCRIPTION: [what this query does]
 
-Example:
-QUERY_TYPE: demographic_finding_count
-CYPHER: MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = 'M' AND p.age = 17 AND toLower(f.finding_label) CONTAINS 'effusion' RETURN COUNT(DISTINCT p) as total_count
-DESCRIPTION: Count unique male patients aged 17 with effusion findings
+CRITICAL RULES FOR DYNAMIC GENERATION:
+1. Base queries on the EXTRACTED data above (entities, demographics, concepts)
+2. Use f.finding_label (NOT f.label) for finding labels
+3. Use CONTAINS for partial matching: toLower(f.finding_label) CONTAINS 'term'
+4. Use COUNT(DISTINCT p) for patient counts to avoid duplicates
+5. Include demographic filters based on extracted demographics
+6. Generate contextually appropriate queries for the specific scenario
+7. **HANDLE COMPOUND FINDINGS**: When entities contain multiple medical conditions connected by "and",
+   generate queries that find patients having ALL conditions separately, not as single compound labels
+8. **MULTIPLE FINDING PATTERN**: For "X and Y" findings, use multiple MATCH patterns:
+   MATCH (p:Patient)-[:HAS_FINDING]->(f1:Finding), (p)-[:HAS_FINDING]->(f2:Finding)
+   WHERE condition1 AND condition2
 """
             
             # Format the template with extracted data
@@ -2555,21 +2596,62 @@ DESCRIPTION: Count unique male patients aged 17 with effusion findings
                 user_input=""
             )
             
-            # Parse the response to extract queries
+            # Parse the response to extract queries - handle markdown code blocks
             queries = []
             current_query = {}
+            in_cypher_block = False
+            cypher_lines = []
             
             lines = response.split('\n')
             for line in lines:
-                line = line.strip()
-                if line.startswith('QUERY_TYPE:'):
+                line_stripped = line.strip()
+                
+                # Check for markdown headers (### QUERY_TYPE:) or regular QUERY_TYPE:
+                if line_stripped.startswith('###') and 'QUERY_TYPE:' in line_stripped:
                     if current_query:
                         queries.append(current_query)
-                    current_query = {'query_type': line.split(':', 1)[1].strip()}
-                elif line.startswith('CYPHER:'):
-                    current_query['cypher'] = line.split(':', 1)[1].strip()
-                elif line.startswith('DESCRIPTION:'):
-                    current_query['description'] = line.split(':', 1)[1].strip()
+                    current_query = {'query_type': line_stripped.split('QUERY_TYPE:', 1)[1].strip()}
+                elif line_stripped.startswith('QUERY_TYPE:'):
+                    if current_query:
+                        queries.append(current_query)
+                    current_query = {'query_type': line_stripped.split(':', 1)[1].strip()}
+                
+                # Handle CYPHER section with potential code blocks
+                elif line_stripped.startswith('CYPHER:'):
+                    cypher_content = line_stripped.split(':', 1)[1].strip()
+                    if cypher_content:  # Cypher on same line
+                        current_query['cypher'] = cypher_content
+                    else:  # Cypher on following lines (potentially in code block)
+                        in_cypher_block = True
+                        cypher_lines = []
+                
+                # Handle code block markers
+                elif in_cypher_block:
+                    if line_stripped.startswith('```'):
+                        if line_stripped == '```' or line_stripped == '```cypher':
+                            # Start or end of code block, skip the marker
+                            continue
+                        else:
+                            # End of code block
+                            in_cypher_block = False
+                            current_query['cypher'] = '\n'.join(cypher_lines).strip()
+                            cypher_lines = []
+                    else:
+                        # Content inside code block
+                        cypher_lines.append(line)
+                
+                # Handle DESCRIPTION section
+                elif line_stripped.startswith('DESCRIPTION:'):
+                    # If we were still in cypher block, close it
+                    if in_cypher_block:
+                        in_cypher_block = False
+                        current_query['cypher'] = '\n'.join(cypher_lines).strip()
+                        cypher_lines = []
+                    current_query['description'] = line_stripped.split(':', 1)[1].strip()
+            
+            # Handle final cypher block if response ends without closing
+            if in_cypher_block and cypher_lines:
+                current_query['cypher'] = '\n'.join(cypher_lines).strip()
             
             # Add the last query
             if current_query:
@@ -2581,6 +2663,33 @@ DESCRIPTION: Count unique male patients aged 17 with effusion findings
                     # Fix property name issues
                     cypher = query['cypher']
                     original_cypher = cypher
+                    
+                    # CRITICAL: Clean up Cypher query - remove any DESCRIPTION text that got included
+                    lines = cypher.split('\n')
+                    clean_cypher_lines = []
+                    for line in lines:
+                        # Stop at any line that starts with DESCRIPTION or other non-Cypher content
+                        if line.strip().startswith(('DESCRIPTION:', 'These queries', '###', 'Note:')):
+                            break
+                        clean_cypher_lines.append(line)
+                    
+                    cypher = '\n'.join(clean_cypher_lines).strip()
+                    
+                    # CRITICAL: Validate query completeness - must have RETURN clause
+                    if not cypher.strip().upper().endswith(('RETURN', 'RETURN COUNT(DISTINCT p) AS TOTAL_COUNT', 'RETURN COUNT(P) AS TOTAL_COUNT')) and 'RETURN' not in cypher.upper():
+                        logger.warning("incomplete_cypher_query_detected", 
+                                     incomplete_query=cypher,
+                                     skipping_incomplete_query=True)
+                        # Skip incomplete queries instead of using hardcoded fallbacks
+                        continue
+                    
+                    # ADDITIONAL: Check for MATCH-only queries (common LLM truncation)
+                    if cypher.strip().upper().startswith('MATCH') and 'WHERE' not in cypher.upper() and 'RETURN' not in cypher.upper():
+                        logger.warning("match_only_query_detected", 
+                                     incomplete_query=cypher,
+                                     skipping_incomplete_query=True)
+                        # Skip incomplete queries instead of using hardcoded fallbacks
+                        continue
                     
                     # Only apply fixes if they are needed to avoid over-fixing
                     # Check for exact wrong patterns and replace them carefully
@@ -2618,26 +2727,19 @@ DESCRIPTION: Count unique male patients aged 17 with effusion findings
                                    query_full=cypher,
                                    changes_made=False)
             
-            # Default query if parsing failed
+            # No default query - let LLM generate proper queries
             if not queries:
-                default_query = {
-                    'query_type': 'demographic_finding_count',
-                    'cypher': 'MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = \"M\" AND p.age = 17 AND toLower(f.finding_label) CONTAINS \"effusion\" RETURN COUNT(DISTINCT p) as total_count',
-                    'description': 'Count male patients aged 17 with effusion findings'
-                }
-                queries = [default_query]
+                logger.warning("no_valid_queries_generated", 
+                             original_query=original_query)
+                return []
             
             logger.info("cypher_generation_tool_completed", queries_count=len(queries))
             return queries
             
         except Exception as e:
             logger.error("cypher_generation_tool_failed", error=str(e))
-            default_query = {
-                'query_type': 'demographic_finding_count',
-                'cypher': 'MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = \"M\" AND p.age = 17 AND toLower(f.finding_label) CONTAINS \"effusion\" RETURN COUNT(DISTINCT p) as total_count',
-                'description': 'Count male patients aged 17 with effusion findings'
-            }
-            return [default_query]
+            # No hardcoded fallback - return empty list to let system handle gracefully
+            return []
     
     def _parse_list_from_string(self, list_str: str) -> List[str]:
         """Parse a list from string format like '[item1, item2, item3]'"""
@@ -2843,6 +2945,15 @@ class SimpleValidatorAgent(SecureAgentBase):
         # Combine results from vector and graph searches
         vector_results = state.get("vector_results", {}).get("documents", [])
         graph_results = state.get("graph_results", {}).get("documents", [])
+        
+        # DEBUG: Log the state structure for debugging
+        logger.info("DEBUG_VALIDATION_STATE", 
+                   graph_results_key_exists="graph_results" in state,
+                   graph_results_type=type(state.get("graph_results", {})),
+                   graph_results_keys=list(state.get("graph_results", {}).keys()) if isinstance(state.get("graph_results", {}), dict) else "not_dict",
+                   graph_results_documents_count=len(graph_results),
+                   vector_results_count=len(vector_results),
+                   state_keys=list(state.keys()))
         
         # Check if we have a "no_data_found" scenario from vector search
         vector_strategy = state.get("vector_results", {}).get("search_strategy", "")
@@ -3445,13 +3556,22 @@ DATABASE SCHEMA:
 - Nodes: Patient (gender, age, patient_id), Finding (finding_label, name), Image, FollowUp
 - Relationships: Patient-[:HAS_FINDING]->Finding
 
-Generate 1-3 optimized Cypher queries that answer the user's question. For demographic queries, include appropriate WHERE clauses.
+CRITICAL RULES FOR QUERY GENERATION:
+1. Use finding_label property (NOT label) for Finding nodes
+2. Use CONTAINS for partial text matching: f.finding_label CONTAINS 'term'
+3. Use COUNT(DISTINCT p) to avoid duplicate patient counts
+4. For demographics: p.gender = 'M'/'F', p.age conditions
+5. Always join Patient and Finding via HAS_FINDING relationship when needed
+6. Generate queries specific to the extracted entities and demographics above
+7. **COMPOUND FINDINGS**: When query mentions multiple conditions with "and" (e.g., "Consolidation and Effusion"),
+   generate queries that find patients having BOTH conditions separately:
+   MATCH (p:Patient)-[:HAS_FINDING]->(f1:Finding), (p)-[:HAS_FINDING]->(f2:Finding)
+   WHERE toLower(f1.finding_label) CONTAINS 'condition1' AND toLower(f2.finding_label) CONTAINS 'condition2'
+8. **AVOID COMPOUND LABELS**: Do NOT look for single labels like 'Consolidation and Effusion' - treat as separate conditions
 
-Examples:
-- For "male patients aged 30 with effusion": MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = 'M' AND p.age = 30 AND f.finding_label = 'effusion' RETURN count(p)
-- For "female patients under 40": MATCH (p:Patient) WHERE p.gender = 'F' AND p.age < 40 RETURN count(p)
+Based on the EXTRACTED ENTITIES and DEMOGRAPHICS above, generate 1-3 optimized Cypher queries that directly answer the user's question.
 
-Generate appropriate queries for the given scenario. Return each query on a new line starting with "QUERY:".
+Return each query on a new line starting with "QUERY:".
 """
 
         response = secure_llm_interaction(
@@ -3804,10 +3924,13 @@ QUERY_TYPE: [descriptive name]
 CYPHER: [cypher query]
 DESCRIPTION: [what this query does]
 
-Example:
-QUERY_TYPE: demographic_count
-CYPHER: MATCH (p:Patient)-[:HAS_FINDING]->(f:Finding) WHERE p.gender = 'M' AND p.age = 17 AND f.finding_label CONTAINS 'effusion' RETURN COUNT(p) as total_count
-DESCRIPTION: Count male patients aged 17 with effusion findings
+RULES FOR DYNAMIC GENERATION:
+1. Generate queries based on the specific EXTRACTED data above
+2. Use finding_label property for Finding nodes
+3. Use CONTAINS for partial matching
+4. Use COUNT(p) or COUNT(DISTINCT p) for counting
+5. Include demographic filters when present in extraction
+6. Focus on the specific entities and concepts identified
 """
         
         # Format the template with extracted data

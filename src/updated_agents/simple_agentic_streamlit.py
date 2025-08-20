@@ -82,23 +82,55 @@ def main():
         # Query input section
         st.subheader("💬 Ask Your Question")
         
-        # Query input
+        # Initialize query results in session state
+        if 'query_result' not in st.session_state:
+            st.session_state.query_result = None
+        if 'current_query' not in st.session_state:
+            st.session_state.current_query = ""
+        if 'clear_trigger' not in st.session_state:
+            st.session_state.clear_trigger = 0
+        
+        # Handle clear button logic first (before rendering anything)
+        clear_clicked = st.session_state.get('clear_clicked', False)
+        if clear_clicked:
+            st.session_state.current_query = ""
+            st.session_state.query_result = None
+            st.session_state.clear_trigger += 1
+            st.session_state.clear_clicked = False  # Reset the flag
+            st.rerun()
+        
+        # Query input with dynamic key to force recreation on clear
         query = st.text_input(
             "Your Query:",
+            value=st.session_state.current_query,
             placeholder="Enter your medical or data analysis query here...",
-            help="Ask questions about medical imaging, patient data, or request specific analysis"
+            help="Ask questions about medical imaging, patient data, or request specific analysis",
+            key=f"query_input_{st.session_state.clear_trigger}"  # Dynamic key
         )
         
+        # Button row with Search and Clear very close together (below textbox)
+        col1, col2, col3 = st.columns([0.7, 0.7, 5])
+        
+        with col1:
+            search_clicked = st.button("🔍 Search", type="primary", disabled=not query or not query.strip())
+        
+        with col2:
+            if st.button("🗑️ Clear", type="secondary"):
+                st.session_state.clear_clicked = True
+                st.rerun()
+        
         # Process query
-        if st.button("🔍 Search", type="primary", disabled=not query or not query.strip()):
+        if search_clicked:
             if query and query.strip():
+                st.session_state.current_query = query.strip()  # Store the query
                 with st.spinner("🤖 Processing with agentic intelligence..."):
                     try:
                         result = app.process_query(query.strip())
+                        st.session_state.query_result = result  # Store result
                         
                         # Display results
                         if result.get('error'):
-                            st.error(f"Processing error: {result.get('final_answer', 'Unknown error')}")
+                            st.error(f"❌ Processing error: {result.get('final_answer', 'Unknown error')}")
                         else:
                             st.success("✅ Agentic processing complete!")
                             
@@ -109,6 +141,21 @@ def main():
                     
                     except Exception as e:
                         st.error(f"❌ Processing Error: {str(e)}")
+        
+        # Display stored results if they exist (after clear or page reload)
+        elif st.session_state.query_result and st.session_state.current_query:
+            result = st.session_state.query_result
+            st.info(f"📋 Previous Query: {st.session_state.current_query}")
+            
+            if result.get('error'):
+                st.error(f"❌ Processing error: {result.get('final_answer', 'Unknown error')}")
+            else:
+                st.success("✅ Agentic processing complete!")
+                
+                # Main answer
+                st.subheader("📝 Answer")
+                final_answer = result.get('final_answer', 'No answer generated')
+                st.write(final_answer)
     
     else:
         # Error state

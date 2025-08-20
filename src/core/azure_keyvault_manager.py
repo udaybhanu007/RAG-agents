@@ -13,7 +13,6 @@ env_dev_file_path = os.path.join(project_root, '.env.dev')
 # Load .env first (for configuration)
 if os.path.exists(env_file_path):
     load_dotenv(env_file_path)
-    print(f"Loaded .env from: {env_file_path}")
 
 # Check if Key Vault is enabled
 KEYVALUE_ENABLED = os.environ.get('Keyvalue_Enabled', 'true').lower() == 'true'
@@ -22,13 +21,10 @@ KEYVALUE_ENABLED = os.environ.get('Keyvalue_Enabled', 'true').lower() == 'true'
 if not KEYVALUE_ENABLED:
     if os.path.exists(env_dev_file_path):
         load_dotenv(env_dev_file_path, override=True)
-        print(f"Key Vault disabled. Loaded environment values from: {env_dev_file_path}")
-        logger.info(f"Key Vault disabled. Loaded environment values from: {env_dev_file_path}")
+        logger.info(f"Key Vault disabled. Loaded environment values from .env.dev")
     else:
-        print(f"Key Vault disabled but .env.dev file not found: {env_dev_file_path}")
-        logger.warning(f"Key Vault disabled but .env.dev file not found: {env_dev_file_path}")
+        logger.warning(f"Key Vault disabled but .env.dev file not found")
 else:
-    print("Key Vault enabled. Will use Azure Key Vault for secrets.")
     logger.info("Key Vault enabled. Will use Azure Key Vault for secrets.")
 
 class AzureKeyVaultManager:
@@ -125,22 +121,15 @@ def get_keyvault_manager() -> AzureKeyVaultManager:
 def get_secret_from_keyvault(secret_name: str) -> Optional[str]:
     """Get a single secret from Azure Key Vault or environment based on Keyvalue_Enabled flag."""
     
-    # Debug information
-    print(f"DEBUG: get_secret_from_keyvault called with: {secret_name}")
-    print(f"DEBUG: KEYVALUE_ENABLED = {KEYVALUE_ENABLED}")
-    
     # If Key Vault is disabled, read from environment (already loaded from .env.dev)
     if not KEYVALUE_ENABLED:
         # Get the secret name from environment variable or use the provided name directly
         secret_value = os.environ.get(secret_name)
-        print(f"DEBUG: Looking for secret: {secret_value}")
         
         if secret_value:          
-            logger.info(f"Retrieved secret '{secret_value}' from environment (.env.dev)")
             return secret_value
         else:
-            print(f"DEBUG: Secret '{secret_value}' not found in environment")          
-            logger.warning(f"Secret '{secret_value}' not found in environment")
+            logger.warning(f"Secret '{secret_name}' not found in environment")
             return None
     
     # Key Vault is enabled - use Azure Key Vault
@@ -150,13 +139,12 @@ def get_secret_from_keyvault(secret_name: str) -> Optional[str]:
         actual_secret_name = os.environ.get(secret_name, secret_name)
         secret_value = manager.get_secret(actual_secret_name)
         if secret_value:
-            logger.info(f"Retrieved secret '{actual_secret_name}' from Azure Key Vault")
             return secret_value
         else:
-            logger.warning(f"Secret '{actual_secret_name}' not found in Azure Key Vault")
+            logger.warning(f"Secret not found in Azure Key Vault")
             return None
     except Exception as e:
-        logger.error(f"Error retrieving secret '{secret_name}' from Key Vault: {e}")
+        logger.error(f"Error retrieving secret from Key Vault: {e}")
         return None
 
 
@@ -169,60 +157,3 @@ def list_keyvault_secrets() -> List[str]:
         logger.error(f"Error listing Key Vault secrets: {e}")
         return []
 
-
-# def main():
-#     """Test Azure Key Vault access with conditional environment fallback."""
-#     print("Azure Key Vault Test with Conditional Configuration")
-#     print("=" * 55)
-#     print(f"\nConfiguration Status:")
-#     print("-" * 40)
-#     print(f"Keyvalue_Enabled: {KEYVALUE_ENABLED}")
-    
-#     if KEYVALUE_ENABLED:
-#         print("🔑 Using Azure Key Vault for secrets")
-#         print("\nTesting Azure Key Vault Connection:")
-#         print("-" * 40)
-        
-#         try:
-#             # Test connection by listing secrets
-#             secrets = list_keyvault_secrets()
-#             print(f"✅ Azure Key Vault connection successful")
-#             print(f"Found {len(secrets)} secrets in Key Vault:")
-#             for i, name in enumerate(secrets, 1):
-#                 print(f"  {i}. {name}")
-#         except Exception as e:
-#             print(f"❌ Azure Key Vault Error: {e}")
-#     else:
-#         print("📄 Using .env.dev file for secrets")
-    
-#     # Test getting specific secrets
-#     print(f"\nTesting Secret Retrieval ({'Key Vault' if KEYVALUE_ENABLED else '.env.dev'}):")
-#     print("-" * 50)
-    
-#     test_secrets = ["QDRANT_API_URL", "AZURE_OPENAI_API_KEY", "QDRANT_API_KEY"]
-    
-#     for secret_name in test_secrets:
-#         print(f"\nTesting '{secret_name}':")
-#         secret_value = get_secret_from_keyvault(secret_name)
-#         if secret_value:
-#             print(f"✅ Found: {secret_value[:30]}...")
-#         else:
-#             print(f"❌ Not found")
-    
-#     # Test multiple secrets
-#     print("\nTesting Multiple Secrets:")
-#     print("-" * 40)
-    
-#     results = get_secrets_from_keyvault(test_secrets)
-#     for secret_name, value in results.items():
-#         status = "✅ Found" if value else "❌ Missing"
-#         print(f"  {secret_name}: {status}")
-    
-#     print("\n" + "=" * 55)
-#     print("Test completed!")
-#     print(f"💡 Tip: Set Keyvalue_Enabled=true in .env to use Azure Key Vault")
-#     print(f"💡 Tip: Set Keyvalue_Enabled=false in .env to use .env.dev file")
-
-
-# if __name__ == "__main__":
-#     main()

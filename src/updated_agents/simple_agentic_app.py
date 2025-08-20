@@ -212,10 +212,16 @@ class EnhancedAgenticRAGApplication:
         4. Learning from execution outcomes
         5. Security validation throughout
         """
-        logger.info("enhanced_query_processing_started", query_length=len(query))
+        # Create initial state with trace_id
+        state = WorkflowState(query=query)
+        trace_id = state.get("trace_id")
+        
+        logger.info("enhanced_query_processing_started", 
+                   query_length=len(query), 
+                   trace_id=trace_id)
         
         if not self.initialized:
-            logger.warning("query_processing_failed_not_initialized")
+            logger.warning("query_processing_failed_not_initialized", trace_id=trace_id)
             return {
                 "final_answer": "System not initialized",
                 "sources": [],
@@ -232,46 +238,46 @@ class EnhancedAgenticRAGApplication:
         
         try:
             # Step 1: Comprehensive query analysis
-            logger.info("step_1_comprehensive_query_analysis")
-            analysis = self.query_analyzer.analyze_query_comprehensive(query)
+            logger.info("step_1_comprehensive_query_analysis", trace_id=trace_id)
+            analysis = self.query_analyzer.analyze_query_comprehensive(query, trace_id=trace_id)
             
             # Step 2: Dynamic tool selection
-            logger.info("step_2_dynamic_tool_selection")
-            tool_selection = self.tool_selector.select_tools_with_reasoning(analysis)
+            logger.info("step_2_dynamic_tool_selection", trace_id=trace_id)
+            tool_selection = self.tool_selector.select_tools_with_reasoning(analysis, trace_id=trace_id)
             
             # Step 3: Create base execution plan
-            logger.info("step_3_base_execution_plan")
+            logger.info("step_3_base_execution_plan", trace_id=trace_id)
             base_execution_plan = self.tool_selector.create_execution_plan(analysis, tool_selection)
             
             # Step 4: Create comprehensive execution plan
-            logger.info("step_4_comprehensive_execution_planning")
-            execution_plan = self.execution_planner.create_comprehensive_plan(analysis, tool_selection, base_execution_plan)
+            logger.info("step_4_comprehensive_execution_planning", trace_id=trace_id)
+            execution_plan = self.execution_planner.create_comprehensive_plan(analysis, tool_selection, base_execution_plan, trace_id=trace_id)
             
             # Step 5: Execute through orchestrator agent  
-            logger.info("step_4_orchestrator_execution")
-            state = WorkflowState(
-                query=query,
-                sanitized_query=query,
-                final_answer="",
-                sources=[],
-                confidence_score=0.0,
-                agent_results=[],
-                reasoning_steps=[],
-                current_step="comprehensive_processing",
-                is_complete=False,
-                analysis=analysis,
-                tool_selection=tool_selection,
-                execution_plan=execution_plan
-            )
+            logger.info("step_5_orchestrator_execution", trace_id=trace_id)
+            
+            # Update state with trace_id
+            state.add_result("sanitized_query", query)
+            state.add_result("final_answer", "")
+            state.add_result("sources", [])
+            state.add_result("confidence_score", 0.0)
+            state.add_result("agent_results", [])
+            state.add_result("reasoning_steps", [])
+            state.add_result("current_step", "comprehensive_processing")
+            state.add_result("is_complete", False)
+            state.add_result("analysis", analysis)
+            state.add_result("tool_selection", tool_selection)
+            state.add_result("execution_plan", execution_plan)
             
             # Process through agentic workflow for complete pipeline
-            result = self.workflow.process_query(query)
+            result = self.workflow.process_query(query, trace_id=trace_id)
             
             logger.info("enhanced_query_processing_completed", 
                        has_answer=bool(result.get("answer")),
                        has_error=result.get("error", False),
                        confidence=result.get("confidence_score", 0.0),
-                       autonomous_reasoning=True)
+                       autonomous_reasoning=True,
+                       trace_id=trace_id)
             
             # Convert the result format to match expected structure
             final_result = {
@@ -290,7 +296,7 @@ class EnhancedAgenticRAGApplication:
             return final_result
             
         except Exception as e:
-            logger.error("enhanced_query_processing_failed", error=str(e))
+            logger.error("enhanced_query_processing_failed", error=str(e), trace_id=trace_id)
             return {
                 "final_answer": f"Processing failed: {str(e)}",
                 "sources": [],

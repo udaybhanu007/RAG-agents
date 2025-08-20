@@ -663,7 +663,10 @@ class AgenticOrchestratorAgent(SecureAgentBase):
     def reason_and_plan(self, state: WorkflowState) -> WorkflowState:
         """ENHANCED AGENTIC CAPABILITY: Dynamic reasoning, goal-setting, and execution planning"""
         
-        logger.info("enhanced_reasoning_started", query_length=len(state.get("query", "")))
+        trace_id = state.get("trace_id")
+        logger.info("enhanced_reasoning_started", 
+                   query_length=len(state.get("query", "")),
+                   trace_id=trace_id)
         
         # Step 1: Deep Query Analysis with Reasoning
         query = state["query"]
@@ -684,6 +687,9 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             f"Set {len(execution_goals)} main goals with {len(execution_goals[0]['sub_goals'])} sub-goals",
             execution_goals
         )
+        logger.debug("execution_goals_set", 
+                    goal_count=len(execution_goals),
+                    trace_id=trace_id)
         
         # Step 3: AGENTIC DECISION MAKING - Dynamic route selection with goal-awareness
         routing_decision = self._make_enhanced_agentic_routing_decision(analysis, execution_goals)
@@ -693,6 +699,10 @@ class AgenticOrchestratorAgent(SecureAgentBase):
             f"Selected route: {routing_decision.selected_route} based on {routing_decision.reasoning}",
             routing_decision
         )
+        logger.info("routing_decision_made", 
+                   selected_route=routing_decision.selected_route,
+                   reasoning=routing_decision.reasoning,
+                   trace_id=trace_id)
         
         # Step 4: AGENTIC EXECUTION - Execute plan with goal tracking
         state = self._execute_agentic_plan_with_goals(state, routing_decision, execution_goals)
@@ -715,14 +725,17 @@ class AgenticOrchestratorAgent(SecureAgentBase):
         
         logger.info("enhanced_reasoning_completed", 
                    goals_achieved=sum(1 for goal in execution_goals if goal.get("status") == "completed"),
-                   reasoning_steps=len(self.reasoning_history))
+                   reasoning_steps=len(self.reasoning_history),
+                   trace_id=trace_id)
         
         return state
 
     @traceable(**get_traceable_config("AgenticOrchestratorAgent"))
-    def _validate_medical_relevance_with_llm(self, query: str) -> Dict[str, Any]:
+    def _validate_medical_relevance_with_llm(self, query: str, trace_id: str = None) -> Dict[str, Any]:
         """LLM-driven medical relevance validation - ONLY called by Orchestrator"""
-        logger.info("orchestrator_medical_validation_called", query_length=len(query))
+        logger.info("orchestrator_medical_validation_called", 
+                   query_length=len(query),
+                   trace_id=trace_id)
         
         # Use LLM-driven validation with the orchestrator's LLM
         result = validate_medical_relevance(query, llm=self.llm)
@@ -2120,11 +2133,12 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                     total_entries=len(self.search_history))
     
     @traceable(**get_traceable_config("AgenticVectorRAGAgent"))
-    def search_vectors(self, query: str) -> VectorSearchResult:
+    def search_vectors(self, query: str, trace_id: str = None) -> VectorSearchResult:
         """Enhanced hybrid vector search with BM25 integration and reranking"""
         logger.debug("hybrid_vector_search_started", 
                     k_documents=self.adaptive_params['k_documents'],
-                    score_threshold=self.adaptive_params['score_threshold'])
+                    score_threshold=self.adaptive_params['score_threshold'],
+                    trace_id=trace_id)
         
         try:
             vector_docs, bm25_docs = [], []
@@ -2133,7 +2147,7 @@ class AgenticVectorRAGAgent(SecureAgentBase):
             embeddings = self._get_embeddings_lazy()
             if embeddings and self.vector_store and hasattr(self.vector_store, 'search'):
                 try:
-                    logger.info("performing_vector_search")
+                    logger.info("performing_vector_search", trace_id=trace_id)
                     
                     # Get collection name using centralized method
                     collection_name = self._get_collection_name()
@@ -2167,10 +2181,14 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                                     "source": "vector_search"
                                 })
                         
-                        logger.info("vector_search_completed", documents_found=len(vector_docs))
+                        logger.info("vector_search_completed", 
+                                   documents_found=len(vector_docs),
+                                   trace_id=trace_id)
                         
                 except Exception as e:
-                    logger.warning("vector_search_failed", error=str(e))
+                    logger.warning("vector_search_failed", 
+                                  error=str(e),
+                                  trace_id=trace_id)
             
             # Try BM25 search for keyword matching
             bm25_retriever = self._get_bm25_retriever_lazy()
@@ -2884,7 +2902,10 @@ CRITICAL RULES FOR DYNAMIC GENERATION:
     @traceable(**get_traceable_config("AgenticGraphRAGAgent"))
     def search_graph(self, state: WorkflowState) -> GraphSearchResult:
         """Graph search implementation using targeted strategy only"""
-        logger.debug("graph_search_started", query_count=self.query_count)
+        trace_id = state.get("trace_id")
+        logger.debug("graph_search_started", 
+                    query_count=self.query_count,
+                    trace_id=trace_id)
         
         try:
             query = state.get("query", "")
@@ -2894,11 +2915,14 @@ CRITICAL RULES FOR DYNAMIC GENERATION:
             
             logger.debug("graph_search_completed",
                         documents_found=result.total_found,
-                        query_count=self.query_count)
+                        query_count=self.query_count,
+                        trace_id=trace_id)
             
             return result
         except Exception as e:
-            logger.error("graph_search_failed", error=str(e))
+            logger.error("graph_search_failed", 
+                        error=str(e),
+                        trace_id=trace_id)
             return GraphSearchResult(
                 documents=[],
                 total_found=0,
@@ -2915,7 +2939,8 @@ class SimpleValidatorAgent(SecureAgentBase):
     @traceable(**get_traceable_config("SimpleValidatorAgent"))
     def validate_results(self, state: WorkflowState) -> ValidationResult:
         """Simple validation of results with structured output"""
-        logger.info("validation_started")
+        trace_id = state.get("trace_id")
+        logger.info("validation_started", trace_id=trace_id)
         
         # Combine results from vector and graph searches
         vector_results = state.get("vector_results", {}).get("documents", [])
@@ -2938,7 +2963,8 @@ class SimpleValidatorAgent(SecureAgentBase):
                     vector_count=len(vector_results),
                     graph_count=len(graph_results),
                     total_count=len(all_documents),
-                    vector_strategy=vector_strategy)
+                    vector_strategy=vector_strategy,
+                    trace_id=trace_id)
         
         if all_documents:
             # Simple validation logic with structured output
@@ -2983,7 +3009,8 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
     @traceable(**get_traceable_config("SimpleAnswerSynthesisAgent"))
     def synthesize_answer(self, state: WorkflowState) -> SynthesisResult:
         """Enhanced answer synthesis using LLM"""
-        logger.info("enhanced_synthesis_started")
+        trace_id = state.get("trace_id")
+        logger.info("enhanced_synthesis_started", trace_id=trace_id)
         
         validated_results = state.get("validated_results", [])
         query = state.get("query", "")
@@ -2994,11 +3021,13 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
         
         # First check if we have no results at all
         if not validated_results:
-            logger.warning("synthesis_no_results")
+            logger.warning("synthesis_no_results", trace_id=trace_id)
             
             # Check if this was a medical query with no data found in database
             if search_strategy == "no_data_found":
-                logger.info("medical_query_no_database_results", query=query)
+                logger.info("medical_query_no_database_results", 
+                           query=query,
+                           trace_id=trace_id)
                 return SynthesisResult(
                     answer="No data found in our medical database for this query.",
                     confidence=0.0,
@@ -3233,7 +3262,7 @@ class SimpleAgenticWorkflow:
         
         return insights
     
-    def process_query(self, query: str) -> Dict[str, Any]:
+    def process_query(self, query: str, trace_id: str = None) -> Dict[str, Any]:
         """
         MAIN AGENTIC PROCESSING PIPELINE
         
@@ -3246,15 +3275,23 @@ class SimpleAgenticWorkflow:
         self.execution_count += 1
         start_time = datetime.now()
         
+        # Use provided trace_id or generate new one
+        if not trace_id:
+            trace_id = WorkflowState.generate_trace_id()
+        
         logger.info("agentic_query_processing_started", 
                    execution_count=self.execution_count,
-                   query_length=len(query))
+                   query_length=len(query),
+                   trace_id=trace_id)
         
-        # Initialize state
+        # Initialize state with trace_id
         state = WorkflowState()
         state["query"] = query
+        state["trace_id"] = trace_id
         state["execution_id"] = self.execution_count
-        logger.debug("workflow_state_initialized", execution_id=self.execution_count)
+        logger.debug("workflow_state_initialized", 
+                    execution_id=self.execution_count,
+                    trace_id=trace_id)
         
         try:
             # CORE AGENTIC STEP: Reason and plan dynamically
@@ -3263,7 +3300,9 @@ class SimpleAgenticWorkflow:
             # Check if it's a non-medical query (handled in reason_and_plan)
             if not state.get("medical_validation", {}).get("is_medical", False) and state.get("final_answer"):
                 execution_time = (datetime.now() - start_time).total_seconds()
-                logger.info("non_medical_query_completed", execution_time=execution_time)
+                logger.info("non_medical_query_completed", 
+                           execution_time=execution_time,
+                           trace_id=trace_id)
                 return {
                     "answer": state.get("final_answer"),
                     "final_answer": state.get("final_answer"),  # Add both keys for compatibility
@@ -3283,7 +3322,9 @@ class SimpleAgenticWorkflow:
             
             # For medical queries, continue with validation and synthesis
             route = state.get("reasoning_plan", {}).get("selected_route", "both")
-            logger.debug("medical_query_route_determined", route=route)
+            logger.debug("medical_query_route_determined", 
+                        route=route,
+                        trace_id=trace_id)
             
             # The orchestrator.reason_and_plan() has already executed the searches
             # and stored results in state["vector_results"] and/or state["graph_results"]

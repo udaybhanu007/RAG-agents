@@ -91,21 +91,24 @@ class EnhancedQueryAnalyzer:
         logger.info("enhanced_query_analyzer_initialized")
     
     @traceable(**get_traceable_config("EnhancedQueryAnalyzer"))
-    def analyze_query_comprehensive(self, query: str) -> ComprehensiveQueryAnalysis:
+    def analyze_query_comprehensive(self, query: str, trace_id: str = None) -> ComprehensiveQueryAnalysis:
         """
         Perform comprehensive analysis of the user query
         
         Args:
             query: The user query to analyze
+            trace_id: Optional trace ID for logging
             
         Returns:
             ComprehensiveQueryAnalysis: Complete structured analysis
         """
-        logger.info("comprehensive_query_analysis_started", query_length=len(query))
+        logger.info("comprehensive_query_analysis_started", 
+                   query_length=len(query),
+                   trace_id=trace_id)
         
         # Security check - sanitize input and detect injection
         if detect_prompt_injection(query):
-            logger.warning("prompt_injection_detected_in_query")
+            logger.warning("prompt_injection_detected_in_query", trace_id=trace_id)
             raise ValueError("Potential prompt injection detected in query")
         
         sanitized_query = sanitize_user_input(query)
@@ -151,7 +154,8 @@ class EnhancedQueryAnalyzer:
                 "analysis_id": analysis_id,
                 "query": sanitized_query,
                 "analysis": comprehensive_analysis,
-                "timestamp": datetime.now()
+                "timestamp": datetime.now(),
+                "trace_id": trace_id
             })
             
             # Keep only recent history (last 100 analyses)
@@ -161,12 +165,15 @@ class EnhancedQueryAnalyzer:
             logger.info("comprehensive_query_analysis_completed", 
                        analysis_id=analysis_id,
                        overall_strategy=overall_strategy,
-                       confidence=confidence)
+                       confidence=confidence,
+                       trace_id=trace_id)
             
             return comprehensive_analysis
             
         except Exception as e:
-            logger.error("comprehensive_query_analysis_failed", error=str(e))
+            logger.error("comprehensive_query_analysis_failed", 
+                        error=str(e),
+                        trace_id=trace_id)
             raise
     
     def _analyze_complexity(self, query: str) -> QueryComplexityAnalysis:

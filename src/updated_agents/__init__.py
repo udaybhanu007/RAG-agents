@@ -52,6 +52,12 @@ from .simple_agentic_agents import (
     create_simple_agentic_workflow
 )
 
+from .langgraph_agentic_workflow import (
+    LangGraphAgenticWorkflow,
+    LangGraphAgenticState,
+    create_langgraph_agentic_workflow
+)
+
 from .simple_agentic_app import (
     EnhancedAgenticRAGApplication,
     enhanced_agentic_app
@@ -78,6 +84,11 @@ __all__ = [
     'SimpleAnswerSynthesisAgent',
     'SimpleAgenticWorkflow',
     'create_simple_agentic_workflow',
+    
+    # LangGraph agentic workflow
+    'LangGraphAgenticWorkflow',
+    'LangGraphAgenticState',
+    'create_langgraph_agentic_workflow',
     
     # Main application
     'EnhancedAgenticRAGApplication',

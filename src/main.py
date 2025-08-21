@@ -44,41 +44,11 @@ def run_document_ingestion():
         print(f"Error during document ingestion: {e}")
         return False
 
-# def run_workflow_query(query: str) -> str:
-#     """
-#     Run a query through the Multi-Agent RAG Workflow
-    
-#     Args:
-#         query (str): The user's query
-        
-#     Returns:
-#         str: The workflow response
-#     """
-#     try:
-#         from agents.multi_agent_rag_workflow import MultiAgentRAGWorkflow
-        
-#         # Initialize workflow
-#         workflow = MultiAgentRAGWorkflow()
-        
-#         # Run the query
-#         result = workflow.run(query)
-        
-#         return result
-        
-#     except Exception as e:
-#         return f"Error processing query: {e}"
-
 if __name__ == "__main__":
     # Run document ingestion when script is executed directly
     success = run_document_ingestion()
     
     if success:
         print("✅ Document ingestion completed successfully!")
-        
-        # # Example query to test the workflow
-        # test_query = "What is NIH Chest X-ray?"
-        # print(f"\n🧠 Testing workflow with query: {test_query}")
-        # result = run_workflow_query(test_query)
-        # print(f"Result: {result}")
     else:
         print("❌ Document ingestion failed!")

@@ -144,15 +144,10 @@ def create_secure_prompt_template(template: str, user_input: str, **kwargs) -> s
     Returns:
         str: Formatted secure prompt
     """
-    # Step 1: Detect injection attempts
-    # if detect_prompt_injection(user_input):
-    #     logger.warning(f"prompt_injection_blocked_in_template: {user_input[:50]}")
-    #     raise ValueError("Prompt injection attempt detected")
-    
-    # Step 2: Sanitize user input
+    # Step 1: Sanitize user input
     sanitized_input = sanitize_user_input(user_input)
     
-    # Step 3: Format template with sanitized input and delimiters
+    # Step 2: Format template with sanitized input and delimiters
     template_params = {
         'user_query': sanitized_input,
         'sanitized_query': sanitized_input,  # Add this for templates that use sanitized_query

@@ -8,7 +8,7 @@ static rules.
 
 import sys
 import os
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pydantic.v1 import BaseModel, Field
 from abc import ABC, abstractmethod

@@ -13,7 +13,6 @@ import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pydantic.v1 import BaseModel, Field
-from langchain_core.prompts import PromptTemplate
 
 # Add the src directory to the path
 current_dir = os.path.dirname(os.path.abspath(__file__))

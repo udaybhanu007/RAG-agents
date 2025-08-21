@@ -23,7 +23,6 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from pydantic.v1 import BaseModel, Field
 import re
 import requests
-import time
 
 # Add the src directory to the path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -33,8 +32,6 @@ if src_dir not in sys.path:
 
 # Import Azure Key Vault manager for secure secret management
 from core.azure_keyvault_manager import get_secret_from_keyvault
-if src_dir not in sys.path:
-    sys.path.insert(0, src_dir)
 
 # Import self-contained base classes and utilities
 from updated_agents.base_classes import (
@@ -55,11 +52,7 @@ from core.observability import traceable, get_traceable_config
 from core.input_sanitization import (
     detect_prompt_injection,
     sanitize_user_input,
-    validate_llm_output,
-    create_secure_prompt_template,
     secure_llm_interaction,
-    MEDICAL_VALIDATION_TEMPLATE,
-    QUERY_ANALYSIS_TEMPLATE,
     ENTITY_EXTRACTION_TEMPLATE,
     DOCUMENT_RERANKING_TEMPLATE,
     SYNTHESIS_TEMPLATE
@@ -2797,13 +2790,6 @@ CRITICAL RULES FOR DYNAMIC GENERATION:
         
         logger.info("executing_targeted_graph_search", received_query=query)
         
-        # Debug the graph_store object
-        logger.info("debugging_graph_store_object", 
-                   graph_store_id=id(self.graph_store),
-                   graph_store_type=type(self.graph_store).__name__,
-                   graph_store_repr=repr(self.graph_store),
-                   graph_store_value=str(self.graph_store) if len(str(self.graph_store)) < 200 else str(self.graph_store)[:200] + "...")
-        
         try:
             self.query_count += 1
             
@@ -2984,15 +2970,6 @@ class SimpleValidatorAgent(SecureAgentBase):
         vector_results = state.get("vector_results", {}).get("documents", [])
         graph_results = state.get("graph_results", {}).get("documents", [])
         
-        # DEBUG: Log the state structure for debugging
-        logger.info("DEBUG_VALIDATION_STATE", 
-                   graph_results_key_exists="graph_results" in state,
-                   graph_results_type=type(state.get("graph_results", {})),
-                   graph_results_keys=list(state.get("graph_results", {}).keys()) if isinstance(state.get("graph_results", {}), dict) else "not_dict",
-                   graph_results_documents_count=len(graph_results),
-                   vector_results_count=len(vector_results),
-                   state_keys=list(state.keys()))
-        
         # Check if we have a "no_data_found" scenario from vector search
         vector_strategy = state.get("vector_results", {}).get("search_strategy", "")
         
@@ -3110,12 +3087,6 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
         # Create comprehensive context
         combined_context = "\n\n".join(context_pieces)
         
-        # DEBUG: Log the context being provided
-        logger.info("DEBUG_CONTEXT_PROVIDED", 
-                   context_length=len(combined_context),
-                   context_pieces_count=len(context_pieces),
-                   context_preview=combined_context[:500] + "..." if len(combined_context) > 500 else combined_context)
-        
         # Enhanced synthesis using secure LLM interaction
         try:
             # Use LLM to generate comprehensive answer with security
@@ -3131,11 +3102,6 @@ class SimpleAnswerSynthesisAgent(SecureAgentBase):
             
             if validated_content:
                 synthesized_answer = str(validated_content).strip()
-                
-                # DEBUG: Log the actual LLM response
-                logger.info("DEBUG_LLM_RESPONSE", 
-                           raw_answer=synthesized_answer,
-                           answer_length=len(synthesized_answer))
                 
                 # Check if LLM provided external knowledge instead of database-only response
                 external_knowledge_indicators = [

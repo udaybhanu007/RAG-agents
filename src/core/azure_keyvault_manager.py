@@ -15,17 +15,22 @@ if os.path.exists(env_file_path):
     load_dotenv(env_file_path)
 
 # Check if Key Vault is enabled
-KEYVALUE_ENABLED = os.environ.get('Keyvalue_Enabled', 'true').lower() == 'true'
+KEYVALUE_ENABLED = os.environ.get('Keyvalue_Enabled', 'false').lower() == 'true'
 
+# If Key Vault is enabled, load .env for Key Vault secret names
 # If Key Vault is disabled, load .env.dev for actual values
-if not KEYVALUE_ENABLED:
+if KEYVALUE_ENABLED:
+    if os.path.exists(env_file_path):
+        load_dotenv(env_file_path, override=True)
+        logger.info(f"Key Vault enabled. Loaded secret names from .env")
+    else:
+        logger.warning(f"Key Vault enabled but .env file not found")
+else:
     if os.path.exists(env_dev_file_path):
         load_dotenv(env_dev_file_path, override=True)
         logger.info(f"Key Vault disabled. Loaded environment values from .env.dev")
     else:
         logger.warning(f"Key Vault disabled but .env.dev file not found")
-else:
-    logger.info("Key Vault enabled. Will use Azure Key Vault for secrets.")
 
 class AzureKeyVaultManager:
     """Azure Key Vault manager using Azure CLI authentication."""
@@ -35,7 +40,6 @@ class AzureKeyVaultManager:
         try:
             from azure.keyvault.secrets import SecretClient
             from azure.identity import DefaultAzureCredential
-            from azure.core.exceptions import ClientAuthenticationError
             import ssl
             import certifi
         except ImportError as e:
@@ -61,17 +65,9 @@ class AzureKeyVaultManager:
         try:
             self.client = SecretClient(vault_url=self.vault_url, credential=credential)
             logger.info("Azure Key Vault client initialized with Azure CLI authentication")
-        except Exception as ssl_error:
-            logger.warning(f"SSL certificate issue detected: {ssl_error}")
-            # Fallback: Try with environment SSL configuration
-            try:
-                import urllib3
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                self.client = SecretClient(vault_url=self.vault_url, credential=credential)
-                logger.info("Azure Key Vault client initialized with SSL workaround")
-            except Exception as e:
-                logger.error(f"Failed to initialize Azure Key Vault client: {e}")
-                raise
+        except Exception as e:
+            logger.error(f"Failed to initialize Azure Key Vault client: {e}")
+            raise
     
     def get_secret(self, secret_name: str) -> Optional[str]:
         """Get a secret from Key Vault."""
@@ -123,28 +119,34 @@ def get_secret_from_keyvault(secret_name: str) -> Optional[str]:
     
     # If Key Vault is disabled, read from environment (already loaded from .env.dev)
     if not KEYVALUE_ENABLED:
-        # Get the secret name from environment variable or use the provided name directly
+        # Get the secret value directly from environment (.env.dev)
         secret_value = os.environ.get(secret_name)
         
         if secret_value:          
+            logger.debug(f"Retrieved secret '{secret_name}' from environment (.env.dev)")
             return secret_value
         else:
             logger.warning(f"Secret '{secret_name}' not found in environment")
             return None
     
-    # Key Vault is enabled - use Azure Key Vault
+    # Key Vault is enabled - use Azure Key Vault with secret names from .env
     try:
         manager = get_keyvault_manager()
-        # Get the secret name from environment variable or use the provided name directly
-        actual_secret_name = os.environ.get(secret_name, secret_name)
-        secret_value = manager.get_secret(actual_secret_name)
+        # Get the Key Vault secret name from environment variable (.env file)
+        keyvault_secret_name = os.environ.get(secret_name, secret_name)
+        
+        # Use the Key Vault secret name from .env configuration
+        logger.debug(f"Using Key Vault secret name '{keyvault_secret_name}' for '{secret_name}'")
+        secret_value = manager.get_secret(keyvault_secret_name)
+        
         if secret_value:
+            logger.debug(f"Retrieved secret '{secret_name}' from Azure Key Vault")
             return secret_value
         else:
-            logger.warning(f"Secret not found in Azure Key Vault")
+            logger.warning(f"Secret '{secret_name}' not found in Azure Key Vault")
             return None
     except Exception as e:
-        logger.error(f"Error retrieving secret from Key Vault: {e}")
+        logger.error(f"Error retrieving secret '{secret_name}' from Key Vault: {e}")
         return None
 
 

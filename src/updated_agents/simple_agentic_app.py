@@ -21,8 +21,9 @@ from core.azure_keyvault_manager import get_secret_from_keyvault
 from updated_agents.enhanced_query_analyzer import EnhancedQueryAnalyzer
 from updated_agents.dynamic_tool_selector import DynamicToolSelector
 from updated_agents.execution_planner import ExecutionPlanner
-from updated_agents.simple_agentic_agents import AgenticOrchestratorAgent, LearningMemory, SimpleAgenticWorkflow
-from updated_agents.base_classes import WorkflowState, QueryResult, AgentResult
+from updated_agents.simple_agentic_agents import AgenticOrchestratorAgent, LearningMemory
+from updated_agents.langgraph_agentic_workflow import LangGraphAgenticWorkflow, create_langgraph_agentic_workflow
+from updated_agents.base_classes import WorkflowState
 from core.logging_config import get_logger
 
 # Initialize logger for the application
@@ -30,16 +31,18 @@ logger = get_logger("simple_agentic_app")
 
 class EnhancedAgenticRAGApplication:
     """
-    Main Application Class for Enhanced Agentic RAG System
+    LangGraph-Powered Enhanced Agentic RAG System
     
     This class provides the primary interface for the truly agentic RAG system
-    with comprehensive capabilities:
+    with comprehensive LangGraph StateGraph orchestration and capabilities:
     
     - Deep LLM-based query analysis (medical relevance, complexity, sub-questions)
     - Dynamic reasoning-based tool selection
     - Adaptive execution planning with contingencies
     - Learning from execution outcomes
+    - LangGraph StateGraph with nodes and edges for standardized orchestration
     - Maximum security integration with core modules
+    - All business logic preserved with enhanced framework compliance
     """
     
     def __init__(self):
@@ -149,8 +152,8 @@ class EnhancedAgenticRAGApplication:
             self.execution_planner = ExecutionPlanner(llm)
             self.learning_memory = LearningMemory()
             
-            # Initialize the complete workflow system instead of just orchestrator
-            self.workflow = SimpleAgenticWorkflow(llm, vector_client, graph_store)
+            # Initialize the LangGraph workflow system instead of simple workflow
+            self.workflow = LangGraphAgenticWorkflow(llm, vector_client, graph_store)
             self.orchestrator_agent = self.workflow.orchestrator
             
             self.initialized = True
@@ -180,8 +183,8 @@ class EnhancedAgenticRAGApplication:
             self.execution_planner = ExecutionPlanner(llm)
             self.learning_memory = LearningMemory()
             
-            # Initialize the complete workflow system instead of just orchestrator
-            self.workflow = SimpleAgenticWorkflow(llm, vector_store, graph_store)
+            # Initialize the LangGraph workflow system instead of simple workflow
+            self.workflow = LangGraphAgenticWorkflow(llm, vector_store, graph_store)
             self.orchestrator_agent = self.workflow.orchestrator
             
             self.initialized = True
@@ -429,42 +432,48 @@ class EnhancedAgenticRAGApplication:
             return {"error": f"Failed to reset learning: {str(e)}"}
     
     def get_system_status(self) -> Dict[str, Any]:
-        """Get comprehensive system status including all agentic capabilities"""
+        """Get comprehensive system status including all LangGraph agentic capabilities"""
         if not self.initialized:
             return {
                 "status": "Not Initialized",
+                "framework": "LangGraph (Not Ready)",
                 "agentic_capabilities": {
                     "comprehensive_analysis": False,
                     "dynamic_tool_selection": False,
                     "adaptive_execution": False,
                     "learning_enabled": False,
                     "contingency_handling": False,
-                    "security_integration": False
+                    "security_integration": False,
+                    "langgraph_orchestration": False
                 }
             }
         
         try:
             return {
                 "status": "Active",
+                "framework": "LangGraph StateGraph",
+                "workflow_type": "LangGraph with nodes and edges",
                 "agentic_capabilities": {
                     "comprehensive_analysis": self.query_analyzer is not None,
                     "dynamic_tool_selection": self.tool_selector is not None,
                     "adaptive_execution": self.execution_planner is not None,
                     "learning_enabled": self.learning_memory is not None,
                     "contingency_handling": True,
-                    "security_integration": True
+                    "security_integration": True,
+                    "langgraph_orchestration": hasattr(self.workflow, '_build_langgraph_workflow')
                 },
                 "components": {
                     "query_analyzer": self.query_analyzer is not None,
                     "tool_selector": self.tool_selector is not None,
                     "execution_planner": self.execution_planner is not None,
                     "orchestrator_agent": self.orchestrator_agent is not None,
-                    "learning_memory": self.learning_memory is not None
+                    "learning_memory": self.learning_memory is not None,
+                    "langgraph_workflow": self.workflow is not None
                 }
             }
         except Exception as e:
             logger.error("get_system_status_failed", error=str(e))
-            return {"status": "Error", "message": str(e)}
+            return {"status": "Error", "framework": "LangGraph (Error)", "message": str(e)}
     
     def reset_learning(self):
         """Reset all learning data for fresh start"""
@@ -529,8 +538,14 @@ class EnhancedAgenticRAGApplication:
             return {"error": f"Failed to get learning insights: {str(e)}"}
     
     def get_processing_capabilities(self) -> Dict[str, Any]:
-        """Get detailed information about processing capabilities"""
+        """Get detailed information about LangGraph-powered processing capabilities"""
         return {
+            "framework": {
+                "orchestration": "LangGraph StateGraph with nodes and edges",
+                "state_management": "TypedDict with automatic type checking",
+                "workflow_compilation": "Optimized graph compilation and execution",
+                "routing": "Conditional edges with intelligent decision points"
+            },
             "query_analysis_capabilities": {
                 "medical_domain_detection": "Advanced LLM-based classification",
                 "complexity_assessment": "Multi-factor complexity analysis",
@@ -545,10 +560,11 @@ class EnhancedAgenticRAGApplication:
                 "resource_optimization": "Efficient resource allocation"
             },
             "execution_capabilities": {
+                "langgraph_orchestration": "Standard StateGraph node execution",
                 "adaptive_planning": "Dynamic execution plan creation",
                 "contingency_handling": "Built-in error recovery mechanisms",
                 "quality_monitoring": "Real-time quality assessment",
-                "parallel_execution": "Concurrent tool execution where possible"
+                "state_based_communication": "Type-safe inter-agent communication"
             },
             "learning_capabilities": {
                 "pattern_recognition": "Query and response pattern learning",
@@ -561,6 +577,12 @@ class EnhancedAgenticRAGApplication:
                 "prompt_injection_detection": "Advanced injection attempt detection",
                 "secure_llm_interactions": "Protected LLM communication",
                 "error_handling": "Graceful error recovery and reporting"
+            },
+            "agentic_features": {
+                "autonomous_reasoning": "Self-directed decision making and planning",
+                "adaptive_behavior": "Learning and adapting from interactions",
+                "goal_oriented_execution": "Task completion with minimal human intervention",
+                "continuous_improvement": "Performance optimization over time"
             }
         }
 

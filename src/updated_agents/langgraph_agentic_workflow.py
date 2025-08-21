@@ -61,6 +61,7 @@ class LangGraphAgenticState(TypedDict):
     
     # Validation and synthesis
     validation_result: Dict[str, Any]
+    validated_results: list  # CRITICAL: Add validated_results to schema
     final_answer: str
     sources: list
     confidence_score: float
@@ -218,17 +219,22 @@ class LangGraphAgenticWorkflow:
         workflow_state = self._convert_to_workflow_state(state)
         validation_result = self.validator.validate_results(workflow_state)
         
+        # CRITICAL FIX: Preserve validated_results from validator
+        validated_results = workflow_state.get("validated_results", [])
+        
         state.update({
             "validation_result": {
                 "is_valid": validation_result.is_valid,
                 "score": validation_result.score,
                 "feedback": validation_result.feedback
             },
+            "validated_results": validated_results,  # Preserve validated_results
             "current_step": "validation_complete"
         })
         
         logger.info("validator_node_completed",
                    is_valid=validation_result.is_valid,
+                   validated_results_count=len(validated_results),
                    trace_id=state.get("trace_id"))
         return state
     
@@ -320,6 +326,7 @@ class LangGraphAgenticWorkflow:
                 "vector_results": {},
                 "graph_results": {},
                 "validation_result": {},
+                "validated_results": [],  # Initialize validated_results
                 "final_answer": "",
                 "sources": [],
                 "confidence_score": 0.0,

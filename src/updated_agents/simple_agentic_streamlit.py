@@ -127,20 +127,6 @@ def main():
                         st.subheader("📝 Answer")
                         final_answer = result.get('final_answer', 'No answer generated')
                         st.write(final_answer)
-                        
-                        # Show LangGraph framework information
-                        agentic_indicators = result.get('agentic_indicators', {})
-                        st.info(f"🔄 Processed using LangGraph StateGraph - LangGraph Orchestrated: {agentic_indicators.get('langgraph_orchestrated', True)}")
-                        
-                        # Show agentic capabilities
-                        if agentic_indicators:
-                            st.subheader("🤖 Agentic Capabilities Demonstrated")
-                            cols = st.columns(3)
-                            capabilities = list(agentic_indicators.items())
-                            for i, (capability, active) in enumerate(capabilities):
-                                with cols[i % 3]:
-                                    emoji = "✅" if active else "❌"
-                                    st.markdown(f"{emoji} **{capability.replace('_', ' ').title()}**")
                 
                 except Exception as e:
                     error_msg = f"Processing Error: {str(e)}"

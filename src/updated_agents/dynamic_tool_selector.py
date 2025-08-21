@@ -321,63 +321,7 @@ class DynamicToolSelector:
             # Return fallback selection
             return self._create_fallback_selection(analysis)
     
-    @traceable(**get_traceable_config("DynamicToolSelector"))
-    def create_execution_plan(self, analysis: ComprehensiveQueryAnalysis, 
-                            selection: ToolSelectionReasoning) -> ToolExecutionPlan:
-        """
-        Create detailed execution plan based on tool selection
-        
-        Args:
-            analysis: Query analysis
-            selection: Tool selection reasoning
-            
-        Returns:
-            ToolExecutionPlan: Detailed execution plan
-        """
-        logger.info("execution_plan_creation_started", 
-                   analysis_id=analysis.query_id,
-                   selected_tools=selection.selected_tools)
-        
-        plan_id = f"plan_{analysis.query_id}_{datetime.now().strftime('%H%M%S')}"
-        
-        # Determine execution strategy
-        primary_strategy = self._determine_execution_strategy(analysis, selection)
-        
-        # Create tool sequence
-        tool_sequence = self._create_tool_sequence(selection)
-        
-        # Identify parallel opportunities
-        parallel_opportunities = self._identify_parallel_opportunities(selection)
-        
-        # Define checkpoints
-        checkpoints = self._define_execution_checkpoints(analysis, selection)
-        
-        # Create fallback strategies
-        fallback_strategies = self._create_fallback_strategies(analysis, selection)
-        
-        # Define success criteria
-        success_criteria = self._define_success_criteria(analysis)
-        
-        # Estimate duration
-        estimated_duration = self._estimate_execution_duration(selection)
-        
-        execution_plan = ToolExecutionPlan(
-            plan_id=plan_id,
-            primary_strategy=primary_strategy,
-            tool_sequence=tool_sequence,
-            parallel_opportunities=parallel_opportunities,
-            checkpoints=checkpoints,
-            fallback_strategies=fallback_strategies,
-            success_criteria=success_criteria,
-            estimated_duration=estimated_duration
-        )
-        
-        logger.info("execution_plan_created", 
-                   plan_id=plan_id,
-                   primary_strategy=primary_strategy,
-                   estimated_duration=estimated_duration)
-        
-        return execution_plan
+
     
     def _assess_tool_capabilities(self, analysis: ComprehensiveQueryAnalysis) -> Dict[str, float]:
         """Assess each tool's capability to handle the query"""
@@ -468,46 +412,87 @@ class DynamicToolSelector:
             logger.error("llm_assisted_selection_failed", error=str(e))
             return "LLM reasoning failed, using capability scores for selection."
     
+    def _parse_llm_tool_selection(self, llm_reasoning: str, assessments: Dict[str, float]) -> List[str]:
+        """Parse LLM reasoning to extract tool recommendations"""
+        reasoning_lower = llm_reasoning.lower()
+        available_tools = list(assessments.keys())
+        
+        # Look for explicit tool recommendations in the LLM response
+        selected_tools = []
+        
+        # Check for direct tool mentions with recommendation keywords
+        recommendation_keywords = ["recommend", "suggest", "select", "choose", "use", "best", "optimal"]
+        
+        for tool in available_tools:
+            tool_mentioned = tool.replace("_", " ") in reasoning_lower or tool in reasoning_lower
+            has_recommendation = any(keyword in reasoning_lower for keyword in recommendation_keywords)
+            
+            if tool_mentioned and has_recommendation:
+                # Check if it's a positive recommendation (not a rejection)
+                tool_context = reasoning_lower.split(tool.replace("_", " "))
+                for context in tool_context[1:]:  # Check context after tool mention
+                    context_words = context[:100]  # Look at next 100 chars
+                    if any(pos_word in context_words for pos_word in ["recommend", "best", "choose", "select"]):
+                        if tool not in selected_tools:
+                            selected_tools.append(tool)
+                        break
+        
+        # If no tools parsed, fall back to highest scoring tool
+        if not selected_tools and assessments:
+            highest_scoring = max(assessments.items(), key=lambda x: x[1])
+            selected_tools = [highest_scoring[0]]
+        
+        return selected_tools
+    
     def _create_selection_reasoning(self, analysis: ComprehensiveQueryAnalysis,
                                   assessments: Dict[str, float],
                                   llm_reasoning: str) -> ToolSelectionReasoning:
         """Create comprehensive tool selection reasoning"""
         
-        # Select tools based on assessments
-        sorted_tools = sorted(assessments.items(), key=lambda x: x[1], reverse=True)
+        # Parse LLM reasoning to extract tool recommendations
+        llm_selected_tools = self._parse_llm_tool_selection(llm_reasoning, assessments)
         
-        # Primary tool selection logic
-        selected_tools = []
-        reasoning_steps = []
-        
-        # If hybrid scores highest and complexity warrants it
-        if (sorted_tools[0][0] == "hybrid_search" and 
-            sorted_tools[0][1] > 0.8 and 
-            analysis.complexity.complexity_level in ["Complex", "Multi-faceted"]):
-            selected_tools = ["hybrid_search"]
-            reasoning_steps.append("Selected hybrid search for complex, multi-faceted query")
-        
-        # If query requires relationships, prefer graph
-        elif (analysis.information_seeking.requires_relationships and 
-              assessments.get("graph_search", 0) > 0.6):
-            selected_tools = ["graph_search"]
-            reasoning_steps.append("Selected graph search for relationship-focused query")
-        
-        # For simple factual queries, prefer vector
-        elif (analysis.information_seeking.information_type == "Factual" and 
-              analysis.complexity.complexity_level == "Simple"):
-            selected_tools = ["vector_search"]
-            reasoning_steps.append("Selected vector search for simple factual query")
-        
-        # Default to top scoring tool
+        # If LLM parsing successful, use those tools; otherwise fall back to capability scores
+        if llm_selected_tools:
+            selected_tools = llm_selected_tools
+            reasoning_steps = [f"LLM Analysis: {llm_reasoning}"]
+            reasoning_steps.append(f"Following LLM recommendation to use: {', '.join(selected_tools)}")
         else:
-            selected_tools = [sorted_tools[0][0]]
-            reasoning_steps.append(f"Selected {sorted_tools[0][0]} based on highest capability score")
+            # Fallback to original logic
+            sorted_tools = sorted(assessments.items(), key=lambda x: x[1], reverse=True)
+            selected_tools = []
+            reasoning_steps = ["LLM parsing failed, using capability-based selection"]
+            
+            # If hybrid scores highest and complexity warrants it
+            if (sorted_tools[0][0] == "hybrid_search" and 
+                sorted_tools[0][1] > 0.8 and 
+                analysis.complexity.complexity_level in ["Complex", "Multi-faceted"]):
+                selected_tools = ["hybrid_search"]
+                reasoning_steps.append("Selected hybrid search for complex, multi-faceted query")
+            
+            # If query requires relationships, prefer graph
+            elif (analysis.information_seeking.requires_relationships and 
+                  assessments.get("graph_search", 0) > 0.6):
+                selected_tools = ["graph_search"]
+                reasoning_steps.append("Selected graph search for relationship-focused query")
+            
+            # For simple factual queries, prefer vector
+            elif (analysis.information_seeking.information_type == "Factual" and 
+                  analysis.complexity.complexity_level == "Simple"):
+                selected_tools = ["vector_search"]
+                reasoning_steps.append("Selected vector search for simple factual query")
+            
+            # Default to top scoring tool
+            else:
+                selected_tools = [sorted_tools[0][0]]
+                reasoning_steps.append(f"Selected {sorted_tools[0][0]} based on highest capability score")
         
-        # Add backup tool
+        # Add backup tool if needed
+        sorted_tools = sorted(assessments.items(), key=lambda x: x[1], reverse=True)
         if len(sorted_tools) > 1 and sorted_tools[1][1] > 0.5:
             backup_tool = sorted_tools[1][0]
-            reasoning_steps.append(f"Added {backup_tool} as backup option")
+            if backup_tool not in selected_tools:
+                reasoning_steps.append(f"Added {backup_tool} as backup option")
         
         # Tool execution order
         tool_order = selected_tools.copy()
@@ -541,8 +526,6 @@ class DynamicToolSelector:
                 expected_outcomes[tool] = "Relationship insights and connected entities"
             else:
                 expected_outcomes[tool] = "Comprehensive analysis with multiple perspectives"
-        
-        reasoning_steps.append(f"LLM Reasoning: {llm_reasoning[:200]}...")
         
         return ToolSelectionReasoning(
             selected_tools=selected_tools,

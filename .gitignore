@@ -36,3 +36,6 @@ build/
 .venv/
 venv/
 extracted_images
+
+### Python Cache ###
+**/__pycache__/

@@ -74,7 +74,6 @@ class ComprehensiveQueryAnalysis(BaseModel):
     sub_questions: SubQuestionAnalysis
     tool_requirements: ToolRequirementAnalysis
     overall_strategy: str = Field(description="Overall processing strategy recommendation")
-    confidence_assessment: float = Field(description="Overall confidence in analysis (0-1)")
 
 class EnhancedQueryAnalyzer:
     """
@@ -131,11 +130,6 @@ class EnhancedQueryAnalyzer:
                 subquestion_analysis, tool_analysis
             )
             
-            # Calculate overall confidence
-            confidence = self._calculate_overall_confidence(
-                complexity_analysis, medical_analysis, information_analysis
-            )
-            
             # Create comprehensive analysis
             comprehensive_analysis = ComprehensiveQueryAnalysis(
                 query_id=analysis_id,
@@ -145,8 +139,7 @@ class EnhancedQueryAnalyzer:
                 information_seeking=information_analysis,
                 sub_questions=subquestion_analysis,
                 tool_requirements=tool_analysis,
-                overall_strategy=overall_strategy,
-                confidence_assessment=confidence
+                overall_strategy=overall_strategy
             )
             
             # Store in history for learning
@@ -165,7 +158,6 @@ class EnhancedQueryAnalyzer:
             logger.info("comprehensive_query_analysis_completed", 
                        analysis_id=analysis_id,
                        overall_strategy=overall_strategy,
-                       confidence=confidence,
                        trace_id=trace_id)
             
             return comprehensive_analysis
@@ -428,30 +420,6 @@ class EnhancedQueryAnalyzer:
         
         return " -> ".join(strategy_parts)
     
-    def _calculate_overall_confidence(self, complexity: QueryComplexityAnalysis,
-                                    medical: MedicalDomainAnalysis,
-                                    information: InformationSeekingAnalysis) -> float:
-        """Calculate overall confidence in the analysis"""
-        
-        confidence_factors = []
-        
-        # Medical classification confidence
-        confidence_factors.append(medical.confidence_score)
-        
-        # Complexity assessment confidence
-        if complexity.complexity_level in ["Simple", "Moderate"]:
-            confidence_factors.append(0.9)
-        else:
-            confidence_factors.append(0.7)
-        
-        # Information type clarity
-        if information.information_type in ["Factual", "Procedural"]:
-            confidence_factors.append(0.8)
-        else:
-            confidence_factors.append(0.6)
-        
-        return sum(confidence_factors) / len(confidence_factors)
-    
     def _parse_complexity_response(self, response: str) -> QueryComplexityAnalysis:
         """Parse LLM response for complexity analysis"""
         # Simple parsing - in production, would use more robust parsing
@@ -604,9 +572,7 @@ class EnhancedQueryAnalyzer:
             fallback_options=fallback_options
         )
     
-    def get_analysis_history(self) -> List[Dict[str, Any]]:
-        """Get analysis history for learning purposes"""
-        return self.analysis_history
+
     
     def get_analysis_statistics(self) -> Dict[str, Any]:
         """Get statistics about performed analyses"""

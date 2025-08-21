@@ -143,7 +143,7 @@ class ExecutionPlanner:
     @traceable(**get_traceable_config("ExecutionPlanner"))
     def create_comprehensive_plan(self, analysis: ComprehensiveQueryAnalysis,
                                 selection: ToolSelectionReasoning,
-                                base_plan: ToolExecutionPlan,
+                                base_plan: Optional[ToolExecutionPlan] = None,
                                 trace_id: str = None) -> ToolExecutionPlan:
         """
         Create comprehensive execution plan with contingencies
@@ -151,7 +151,7 @@ class ExecutionPlanner:
         Args:
             analysis: Query analysis
             selection: Tool selection reasoning
-            base_plan: Base execution plan
+            base_plan: Optional base execution plan (will create if not provided)
             trace_id: Optional trace ID for logging
             
         Returns:
@@ -159,12 +159,31 @@ class ExecutionPlanner:
         """
         logger.info("comprehensive_plan_creation_started",
                    analysis_id=analysis.query_id,
-                   base_plan_id=base_plan.plan_id,
+                   base_plan_id=base_plan.plan_id if base_plan else "creating_new",
                    trace_id=trace_id)
         
         try:
+            # Create or use base plan components
+            if base_plan is None:
+                # Create basic plan components
+                plan_id = f"plan_{analysis.query_id}_{datetime.now().strftime('%H%M%S')}"
+                primary_strategy = self._determine_execution_strategy(analysis, selection)
+                tool_sequence = self._create_basic_tool_sequence(selection)
+                parallel_opportunities = self._identify_parallel_opportunities(selection)
+                basic_checkpoints = self._create_basic_checkpoints(analysis, selection)
+                basic_fallback_strategies = self._create_basic_fallback_strategies(analysis, selection)
+                success_criteria = self._create_basic_success_criteria(analysis)
+            else:
+                plan_id = base_plan.plan_id
+                primary_strategy = base_plan.primary_strategy
+                tool_sequence = base_plan.tool_sequence
+                parallel_opportunities = base_plan.parallel_opportunities
+                basic_checkpoints = base_plan.checkpoints
+                basic_fallback_strategies = base_plan.fallback_strategies
+                success_criteria = base_plan.success_criteria
+            
             # Create detailed execution steps
-            execution_steps = self._create_detailed_steps(analysis, selection, base_plan)
+            execution_steps = self._create_detailed_steps(analysis, selection, plan_id)
             
             # Add contingency planning
             contingency_strategies = self._plan_contingencies(analysis, selection, execution_steps)
@@ -177,13 +196,13 @@ class ExecutionPlanner:
             
             # Create enhanced execution plan
             enhanced_plan = ToolExecutionPlan(
-                plan_id=f"enhanced_{base_plan.plan_id}",
-                primary_strategy=base_plan.primary_strategy,
-                tool_sequence=base_plan.tool_sequence + [{"execution_steps": execution_steps}],
-                parallel_opportunities=base_plan.parallel_opportunities,
-                checkpoints=base_plan.checkpoints + monitoring_checkpoints,
-                fallback_strategies=base_plan.fallback_strategies + contingency_strategies,
-                success_criteria=base_plan.success_criteria,
+                plan_id=f"enhanced_{plan_id}",
+                primary_strategy=primary_strategy,
+                tool_sequence=tool_sequence + [{"execution_steps": execution_steps}],
+                parallel_opportunities=parallel_opportunities,
+                checkpoints=basic_checkpoints + monitoring_checkpoints,
+                fallback_strategies=basic_fallback_strategies + contingency_strategies,
+                success_criteria=success_criteria,
                 estimated_duration=self._calculate_enhanced_duration(execution_steps)
             )
             
@@ -199,8 +218,21 @@ class ExecutionPlanner:
             logger.error("comprehensive_plan_creation_failed", 
                         error=str(e),
                         trace_id=trace_id)
-            # Return base plan if enhancement fails
-            return base_plan
+            # Return basic plan if enhancement fails
+            if base_plan:
+                return base_plan
+            else:
+                # Create minimal fallback plan
+                return ToolExecutionPlan(
+                    plan_id=f"fallback_{analysis.query_id}",
+                    primary_strategy="fallback_execution",
+                    tool_sequence=[{"tool": selection.selected_tools[0] if selection.selected_tools else "vector_search"}],
+                    parallel_opportunities=[],
+                    checkpoints=["basic_execution_check"],
+                    fallback_strategies=[{"scenario": "execution_failure", "action": "provide_error_message"}],
+                    success_criteria=["basic_execution_completes"],
+                    estimated_duration="Standard (30 seconds)"
+                )
     
     @traceable(**get_traceable_config("ExecutionPlanner"))
     async def execute_plan_with_contingencies(self, analysis: ComprehensiveQueryAnalysis,
@@ -268,7 +300,7 @@ class ExecutionPlanner:
     
     def _create_detailed_steps(self, analysis: ComprehensiveQueryAnalysis,
                              selection: ToolSelectionReasoning,
-                             base_plan: ToolExecutionPlan) -> List[ExecutionStep]:
+                             plan_id: str) -> List[ExecutionStep]:
         """Create detailed execution steps"""
         steps = []
         
@@ -350,6 +382,83 @@ class ExecutionPlanner:
         ))
         
         return steps
+    
+    def _determine_execution_strategy(self, analysis: ComprehensiveQueryAnalysis, 
+                                    selection: ToolSelectionReasoning) -> str:
+        """Determine the primary execution strategy"""
+        if len(selection.selected_tools) == 1:
+            return f"Single-tool execution with {selection.selected_tools[0]}"
+        elif "hybrid_search" in selection.selected_tools:
+            return "Comprehensive hybrid approach with result synthesis"
+        elif analysis.sub_questions.has_multiple_questions:
+            return "Sequential processing of sub-questions"
+        else:
+            return "Multi-tool validation and comparison"
+    
+    def _create_basic_tool_sequence(self, selection: ToolSelectionReasoning) -> List[Dict[str, Any]]:
+        """Create basic tool sequence"""
+        sequence = []
+        for i, tool in enumerate(selection.tool_order):
+            step = {
+                "step": i + 1,
+                "tool": tool,
+                "purpose": selection.expected_outcomes.get(tool, "Process query"),
+                "confidence": selection.confidence_scores.get(tool, 0.0),
+                "resource_level": selection.resource_allocation.get(tool, "Medium")
+            }
+            sequence.append(step)
+        return sequence
+    
+    def _identify_parallel_opportunities(self, selection: ToolSelectionReasoning) -> List[List[str]]:
+        """Identify tools that can run in parallel"""
+        parallel_groups = []
+        if "vector_search" in selection.selected_tools and "graph_search" in selection.selected_tools:
+            parallel_groups.append(["vector_search", "graph_search"])
+        return parallel_groups
+    
+    def _create_basic_checkpoints(self, analysis: ComprehensiveQueryAnalysis, 
+                                selection: ToolSelectionReasoning) -> List[str]:
+        """Create basic validation checkpoints"""
+        checkpoints = [
+            "Validate medical relevance before processing",
+            "Check tool execution success",
+            "Validate result quality and completeness"
+        ]
+        if analysis.sub_questions.has_multiple_questions:
+            checkpoints.insert(1, "Validate sub-question processing progress")
+        if len(selection.selected_tools) > 1:
+            checkpoints.append("Compare and synthesize results from multiple tools")
+        return checkpoints
+    
+    def _create_basic_fallback_strategies(self, analysis: ComprehensiveQueryAnalysis,
+                                        selection: ToolSelectionReasoning) -> List[Dict[str, Any]]:
+        """Create basic fallback strategies"""
+        strategies = []
+        if len(selection.selected_tools) > 1:
+            strategies.append({
+                "scenario": "Primary tool failure",
+                "action": f"Switch to {selection.selected_tools[1]}",
+                "trigger": "Tool execution error or timeout"
+            })
+        strategies.append({
+            "scenario": "Complete failure",
+            "action": "Provide general guidance based on query intent",
+            "trigger": "No tools produce usable results"
+        })
+        return strategies
+    
+    def _create_basic_success_criteria(self, analysis: ComprehensiveQueryAnalysis) -> List[str]:
+        """Create basic success criteria"""
+        criteria = [
+            "Tool execution completes without errors",
+            "Results are relevant to the query",
+            "Medical validation passes if applicable"
+        ]
+        if analysis.information_seeking.information_type == "Comparative":
+            criteria.append("Multiple perspectives are provided for comparison")
+        if analysis.sub_questions.has_multiple_questions:
+            criteria.append("All sub-questions are addressed")
+        return criteria
     
     def _plan_contingencies(self, analysis: ComprehensiveQueryAnalysis,
                           selection: ToolSelectionReasoning,

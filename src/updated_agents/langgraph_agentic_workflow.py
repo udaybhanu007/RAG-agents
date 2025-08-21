@@ -429,31 +429,6 @@ class LangGraphAgenticWorkflow:
         }
         
         return insights
-    
-    def get_system_status(self) -> Dict[str, Any]:
-        """Get system status with LangGraph information"""
-        return {
-            "status": "Active",
-            "framework": "LangGraph",
-            "workflow_compiled": self.workflow is not None,
-            "agentic_capabilities": {
-                "comprehensive_analysis": True,
-                "dynamic_tool_selection": True,
-                "adaptive_execution": True,
-                "learning_enabled": True,
-                "contingency_handling": True,
-                "security_integration": True,
-                "langgraph_orchestration": True
-            },
-            "components": {
-                "orchestrator": self.orchestrator is not None,
-                "vector_agent": self.vector_agent is not None,
-                "graph_agent": self.graph_agent is not None,
-                "validator": self.validator is not None,
-                "synthesizer": self.synthesizer is not None,
-                "langgraph_workflow": self.workflow is not None
-            }
-        }
 
 # Factory function for easy instantiation
 def create_langgraph_agentic_workflow(llm: AzureChatOpenAI, vector_store, graph_store) -> LangGraphAgenticWorkflow:

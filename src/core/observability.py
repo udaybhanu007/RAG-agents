@@ -27,7 +27,7 @@ from .azure_keyvault_manager import get_secret_from_keyvault
 
 # LangSmith Configuration
 LANGSMITH_CONFIG = {
-    "project_name": "Agentic-RAG-Workflow",
+    "project_name": os.environ.get("LANGCHAIN_PROJECT", "hybrid-agent-rag-workflow"),
     "hide_inputs": True,      # Hide medical data for privacy
     "hide_outputs": True,     # Hide medical responses for privacy
     "auto_batch_tracing": True,
@@ -78,7 +78,7 @@ def get_traceable_config(agent_name: str) -> Dict[str, Any]:
         "hide_outputs": True,
         "metadata": {
             "agent_type": agent_name,
-            "project": "Agentic-RAG-Workflow"
+            "project": os.environ.get("LANGCHAIN_PROJECT", "hybrid-agent-rag-workflow")
         }
     }
 

@@ -1734,22 +1734,93 @@ class AgenticVectorRAGAgent(SecureAgentBase):
             'bm25_only': {'attempts': 0, 'success_rate': 1.0, 'avg_relevance': 0.0}
         }
         
-        # Initialize embeddings and BM25 for hybrid search
+        # Initialize resource states
         self.embeddings = None
         self.bm25_retriever = None
         self._embeddings_initialized = False
         self._bm25_initialized = False
         
+        # PRE-INITIALIZE heavy resources to eliminate lazy loading delays
+        self._initialize_resources_upfront()
+        
         logger.info("enhanced_agentic_vector_agent_initialized", 
                    initial_k_documents=self.adaptive_params['k_documents'],
                    initial_score_threshold=self.adaptive_params['score_threshold'],
-                   search_strategy=self.adaptive_params['search_strategy'])
+                   search_strategy=self.adaptive_params['search_strategy'],
+                   embeddings_ready=self._embeddings_initialized,
+                   bm25_ready=self._bm25_initialized)
+    
+    def _initialize_resources_upfront(self):
+        """
+        Pre-initialize all heavy resources during startup to eliminate lazy loading delays.
+        This is the biggest performance optimization - moves 3-10 second delays from 
+        first search call to initialization time.
+        """
+        logger.info("pre_initializing_heavy_resources_started")
+        initialization_start = datetime.now()
+        
+        # Initialize embeddings immediately
+        try:
+            logger.info("pre_initializing_embeddings")
+            self.embeddings = _initialize_embeddings_fast()
+            if self.embeddings:
+                self._embeddings_initialized = True
+                logger.info("embeddings_pre_initialized_successfully")
+            else:
+                logger.warning("embeddings_pre_initialization_failed")
+        except Exception as e:
+            logger.error("embeddings_pre_initialization_error", error=str(e))
+            self._embeddings_initialized = False
+        
+        # Initialize BM25 retriever immediately
+        try:
+            logger.info("pre_initializing_bm25_retriever")
+            collection_name = self._get_collection_name()
+            if collection_name and self.vector_store:
+                self.bm25_retriever = _initialize_bm25_retriever(
+                    self.vector_store,
+                    collection_name,
+                    max_docs=500
+                )
+                if self.bm25_retriever:
+                    self._bm25_initialized = True
+                    logger.info("bm25_retriever_pre_initialized_successfully")
+                else:
+                    logger.warning("bm25_retriever_pre_initialization_returned_none")
+                    self._bm25_initialized = False
+            else:
+                logger.warning("bm25_pre_initialization_skipped", 
+                             has_collection=bool(collection_name),
+                             has_vector_store=bool(self.vector_store))
+                self._bm25_initialized = False
+        except Exception as e:
+            logger.error("bm25_pre_initialization_error", error=str(e))
+            self._bm25_initialized = False
+        
+        initialization_time = (datetime.now() - initialization_start).total_seconds()
+        logger.info("resource_pre_initialization_completed", 
+                   duration_seconds=initialization_time,
+                   embeddings_ready=self._embeddings_initialized,
+                   bm25_ready=self._bm25_initialized,
+                   status="success" if (self._embeddings_initialized or self._bm25_initialized) else "partial_failure")
     
     def _get_embeddings_lazy(self):
-        """Lazy initialization of embeddings - only when needed for vector search"""
+        """
+        Fast embeddings access - now uses pre-initialized resources
+        Falls back to lazy initialization only if pre-initialization failed
+        """
+        if self._embeddings_initialized and self.embeddings:
+            return self.embeddings
+        
+        # Fallback to lazy initialization if pre-initialization failed
+        logger.warning("embeddings_not_pre_initialized_falling_back_to_lazy")
         if not self._embeddings_initialized:
-            self.embeddings = _initialize_embeddings_fast()
-            self._embeddings_initialized = True
+            try:
+                self.embeddings = _initialize_embeddings_fast()
+                self._embeddings_initialized = True
+            except Exception as e:
+                logger.error("lazy_embeddings_initialization_failed", error=str(e))
+                raise
         return self.embeddings
     
     def _get_collection_name(self):
@@ -1770,16 +1841,24 @@ class AgenticVectorRAGAgent(SecureAgentBase):
             return None
     
     def _get_bm25_retriever_lazy(self):
-        """Lazy initialization of BM25 retriever - only when needed for hybrid search"""
-        # Return cached retriever if already initialized successfully
-        if self._bm25_initialized:
+        """
+        Fast BM25 retriever access - now uses pre-initialized resources
+        Falls back to lazy initialization only if pre-initialization failed
+        """
+        # Return pre-initialized retriever if available
+        if self._bm25_initialized and self.bm25_retriever:
             return self.bm25_retriever
         
-        # Only attempt initialization if we have a vector store and haven't initialized yet
+        # Return None if pre-initialization failed and we already tried
+        if self._bm25_initialized and not self.bm25_retriever:
+            logger.warning("bm25_retriever_pre_initialization_failed_returning_none")
+            return None
+        
+        # Fallback to lazy initialization if pre-initialization was skipped
+        logger.warning("bm25_not_pre_initialized_falling_back_to_lazy")
         if self.vector_store:
             try:
-                logger.info("initializing_bm25_retriever_first_time")
-                # Get collection name using centralized method
+                logger.info("lazy_initializing_bm25_retriever")
                 collection_name = self._get_collection_name()
                 
                 if collection_name:
@@ -1791,12 +1870,12 @@ class AgenticVectorRAGAgent(SecureAgentBase):
                         )
                         if self.bm25_retriever:
                             self._bm25_initialized = True
-                            logger.info("bm25_retriever_initialized_successfully")
+                            logger.info("bm25_retriever_lazy_initialized_successfully")
                         else:
-                            logger.warning("bm25_retriever_initialization_returned_none")
+                            logger.warning("bm25_retriever_lazy_initialization_returned_none")
                             self._bm25_initialized = True  # Mark as attempted to avoid repeated tries
                     except Exception as e:
-                        logger.warning("bm25_collection_initialization_failed", 
+                        logger.warning("bm25_collection_lazy_initialization_failed", 
                                      collection_name=collection_name, error=str(e))
                         self._bm25_initialized = True  # Mark as attempted to avoid repeated tries
                 else:

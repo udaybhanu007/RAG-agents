@@ -89,9 +89,9 @@ class EnhancedQueryAnalyzer:
         logger.info("enhanced_query_analyzer_initialized")
     
     @traceable(**get_traceable_config("EnhancedQueryAnalyzer"))
-    def analyze_query_comprehensive(self, query: str, trace_id: str = None) -> ComprehensiveQueryAnalysis:
+    def analyze_query_comprehensive(self, query: str, trace_id: Optional[str] = None) -> ComprehensiveQueryAnalysis:
         """
-        Perform comprehensive analysis of the user query
+        Perform comprehensive analysis of the user query using optimized single LLM call
         
         Args:
             query: The user query to analyze
@@ -116,18 +116,230 @@ class EnhancedQueryAnalyzer:
         self.analysis_count += 1
         
         try:
-            # Perform different aspects of analysis
-            complexity_analysis = self._analyze_complexity(sanitized_query)
-            medical_analysis = self._analyze_medical_domain(sanitized_query)
-            information_analysis = self._analyze_information_seeking(sanitized_query)
-            subquestion_analysis = self._analyze_sub_questions(sanitized_query)
-            tool_analysis = self._analyze_tool_requirements(sanitized_query, medical_analysis, complexity_analysis)
+            # Single optimized LLM call for all analyses
+            comprehensive_analysis = self._analyze_query_unified(sanitized_query, analysis_id, trace_id)
             
-            # Generate overall strategy
-            overall_strategy = self._generate_overall_strategy(
-                complexity_analysis, medical_analysis, information_analysis, 
-                subquestion_analysis, tool_analysis
+            # Store in history for learning (async to avoid blocking)
+            self._store_analysis_history(analysis_id, sanitized_query, comprehensive_analysis, trace_id)
+            
+            logger.info("comprehensive_query_analysis_completed", 
+                       analysis_id=analysis_id,
+                       overall_strategy=comprehensive_analysis.overall_strategy,
+                       trace_id=trace_id)
+            
+            return comprehensive_analysis
+            
+        except Exception as e:
+            logger.error("comprehensive_query_analysis_failed", 
+                        error=str(e),
+                        trace_id=trace_id)
+            # Re-raise the exception instead of fallback
+            raise
+    
+    def _analyze_query_unified(self, query: str, analysis_id: str, trace_id: Optional[str] = None) -> ComprehensiveQueryAnalysis:
+        """
+        Unified analysis using a single LLM call for all analysis aspects
+        
+        Args:
+            query: The sanitized query to analyze
+            analysis_id: Unique analysis identifier
+            trace_id: Optional trace ID for logging
+            
+        Returns:
+            ComprehensiveQueryAnalysis: Complete structured analysis
+        """
+        logger.debug("unified_query_analysis_started", 
+                    analysis_id=analysis_id, 
+                    trace_id=trace_id)
+        
+        # Unified analysis template that captures all aspects in one call
+        unified_template = """
+        Analyze this query comprehensively and provide structured output for all analysis aspects.
+        
+        Query to analyze: {user_query}
+        
+        Provide your analysis in this EXACT format (each section on a new line):
+        
+        MEDICAL: [Yes/No]
+        MEDICAL_DOMAIN: [Radiology/Cardiology/Oncology/General Medicine/Not Medical]
+        MEDICAL_CONFIDENCE: [0.0-1.0]
+        MEDICAL_ENTITIES: [comma-separated list of medical terms found]
+        CLINICAL_CONTEXT: [brief description of clinical scenario]
+        
+        COMPLEXITY: [Simple/Moderate/Complex/Multi-faceted]
+        COMPLEXITY_REASONING: [brief explanation of complexity assessment]
+        PROCESSING_TIME: [Quick/Standard/Extended/Comprehensive]
+        MULTIPLE_STEPS: [Yes/No]
+        
+        INFO_TYPE: [Factual/Comparative/Analytical/Procedural/Diagnostic]
+        SPECIFIC_NEEDS: [comma-separated list of specific information requirements]
+        RELATIONSHIPS_NEEDED: [Yes/No]
+        QUANTITATIVE_DATA: [Yes/No]
+        TEMPORAL_ASPECT: [Current/Historical/Trending/Predictive/Not Applicable]
+        
+        MULTIPLE_QUESTIONS: [Yes/No]
+        SUB_QUESTIONS: [comma-separated list of sub-questions if any]
+        QUESTION_DEPENDENCIES: [brief description of dependencies]
+        PROCESSING_ORDER: [recommended order for processing]
+        
+        RECOMMENDED_TOOLS: [comma-separated list from: vector_search, graph_search, both_searches, medical_validation, query_analysis, document_retrieval, relationship_analysis, statistical_analysis]
+        TOOL_PRIORITIES: [tool1:priority1, tool2:priority2, etc. where priority is 1-10]
+        PRIMARY_TOOL_REASONING: [brief explanation for top recommended tool]
+        FALLBACK_TOOLS: [comma-separated list of alternative tools]
+        
+        OVERALL_STRATEGY: [brief processing strategy recommendation]
+        """
+        
+        try:
+            response = secure_llm_interaction(
+                self.llm, 
+                unified_template, 
+                query
             )
+            
+            # Parse the unified response into structured analysis
+            return self._parse_unified_response(response, query, analysis_id, trace_id)
+            
+        except Exception as e:
+            logger.error("unified_query_analysis_failed", 
+                        error=str(e),
+                        analysis_id=analysis_id,
+                        trace_id=trace_id)
+            # Re-raise the exception instead of fallback
+            raise
+    
+    def _parse_unified_response(self, response: str, query: str, analysis_id: str, trace_id: Optional[str] = None) -> ComprehensiveQueryAnalysis:
+        """
+        Parse the unified LLM response into structured analysis components
+        
+        Args:
+            response: Raw LLM response
+            query: Original query
+            analysis_id: Analysis identifier
+            trace_id: Optional trace ID
+            
+        Returns:
+            ComprehensiveQueryAnalysis: Parsed structured analysis
+        """
+        logger.debug("parsing_unified_response", 
+                    analysis_id=analysis_id, 
+                    trace_id=trace_id)
+        
+        lines = response.strip().split('\n')
+        parsed_data = {}
+        
+        # Parse response into key-value pairs
+        for line in lines:
+            if ':' in line:
+                key, value = line.split(':', 1)
+                parsed_data[key.strip().upper()] = value.strip()
+        
+        # Helper function to safely get values with defaults
+        def get_value(key: str, default: str = "") -> str:
+            return parsed_data.get(key, default)
+        
+        def get_bool_value(key: str, default: bool = False) -> bool:
+            value = get_value(key).lower()
+            return value in ['yes', 'true', '1']
+        
+        def get_float_value(key: str, default: float = 0.0) -> float:
+            try:
+                return float(get_value(key, str(default)))
+            except (ValueError, TypeError):
+                return default
+        
+        def get_list_value(key: str, default: Optional[List[str]] = None) -> List[str]:
+            if default is None:
+                default = []
+            value = get_value(key)
+            if not value or value.lower() in ['none', 'n/a', 'not applicable']:
+                return default
+            return [item.strip() for item in value.split(',') if item.strip()]
+        
+        def parse_tool_priorities(priorities_str: str) -> Dict[str, int]:
+            """Parse tool priorities from format 'tool1:priority1, tool2:priority2'"""
+            priorities = {}
+            if not priorities_str or priorities_str.lower() in ['none', 'n/a']:
+                return priorities
+            
+            for item in priorities_str.split(','):
+                if ':' in item:
+                    tool, priority = item.split(':', 1)
+                    try:
+                        priorities[tool.strip()] = int(priority.strip())
+                    except (ValueError, TypeError):
+                        priorities[tool.strip()] = 5  # Default priority
+            return priorities
+        
+        # Build analysis components
+        try:
+            # Medical Domain Analysis
+            medical_analysis = MedicalDomainAnalysis(
+                is_medical=get_bool_value('MEDICAL'),
+                medical_domain=get_value('MEDICAL_DOMAIN', 'Not Medical'),
+                confidence_score=get_float_value('MEDICAL_CONFIDENCE', 0.5),
+                medical_entities=get_list_value('MEDICAL_ENTITIES'),
+                clinical_context=get_value('CLINICAL_CONTEXT', 'No clinical context identified')
+            )
+            
+            # Complexity Analysis
+            complexity_analysis = QueryComplexityAnalysis(
+                complexity_level=get_value('COMPLEXITY', 'Moderate'),
+                reasoning=get_value('COMPLEXITY_REASONING', 'Standard complexity assessment'),
+                estimated_processing_time=get_value('PROCESSING_TIME', 'Standard'),
+                requires_multiple_steps=get_bool_value('MULTIPLE_STEPS', True)
+            )
+            
+            # Information Seeking Analysis
+            information_analysis = InformationSeekingAnalysis(
+                information_type=get_value('INFO_TYPE', 'Factual'),
+                specific_needs=get_list_value('SPECIFIC_NEEDS', ['General information']),
+                requires_relationships=get_bool_value('RELATIONSHIPS_NEEDED'),
+                requires_quantitative_data=get_bool_value('QUANTITATIVE_DATA'),
+                temporal_aspect=get_value('TEMPORAL_ASPECT', 'Current')
+            )
+            
+            # Sub-Question Analysis
+            sub_questions_list = get_list_value('SUB_QUESTIONS')
+            if not sub_questions_list:
+                sub_questions_list = [query[:100] + "..." if len(query) > 100 else query]
+            
+            subquestion_analysis = SubQuestionAnalysis(
+                has_multiple_questions=get_bool_value('MULTIPLE_QUESTIONS'),
+                sub_questions=sub_questions_list,
+                question_dependencies=get_list_value('QUESTION_DEPENDENCIES', ['No dependencies identified']),
+                processing_order=get_list_value('PROCESSING_ORDER', ['Process as single question'])
+            )
+            
+            # Tool Requirements Analysis
+            recommended_tools = get_list_value('RECOMMENDED_TOOLS', ['vector_search'])
+            tool_priorities = parse_tool_priorities(get_value('TOOL_PRIORITIES'))
+            
+            # Ensure all recommended tools have priorities
+            for tool in recommended_tools:
+                if tool not in tool_priorities:
+                    tool_priorities[tool] = 7  # Default priority
+            
+            # Build tool reasoning
+            tool_reasoning = {}
+            primary_reasoning = get_value('PRIMARY_TOOL_REASONING', 'Standard tool selection')
+            for i, tool in enumerate(recommended_tools):
+                if i == 0:
+                    tool_reasoning[tool] = primary_reasoning
+                else:
+                    tool_reasoning[tool] = f"Supporting tool for comprehensive analysis"
+            
+            tool_analysis = ToolRequirementAnalysis(
+                recommended_tools=recommended_tools,
+                tool_priorities=tool_priorities,
+                tool_reasoning=tool_reasoning,
+                fallback_options=get_list_value('FALLBACK_TOOLS', ['graph_search', 'document_retrieval'])
+            )
+            
+            # Overall Strategy
+            overall_strategy = get_value('OVERALL_STRATEGY', 
+                                       self._generate_overall_strategy(complexity_analysis, medical_analysis, 
+                                                                     information_analysis, subquestion_analysis, tool_analysis))
             
             # Create comprehensive analysis
             comprehensive_analysis = ComprehensiveQueryAnalysis(
@@ -141,11 +353,38 @@ class EnhancedQueryAnalyzer:
                 overall_strategy=overall_strategy
             )
             
+            logger.debug("unified_response_parsed_successfully", 
+                        analysis_id=analysis_id,
+                        trace_id=trace_id)
+            
+            return comprehensive_analysis
+            
+        except Exception as e:
+            logger.error("unified_response_parsing_failed", 
+                        error=str(e),
+                        analysis_id=analysis_id,
+                        trace_id=trace_id)
+            # Re-raise the exception instead of fallback
+            raise
+    
+    def _store_analysis_history(self, analysis_id: str, query: str, 
+                               analysis: ComprehensiveQueryAnalysis, 
+                               trace_id: Optional[str] = None) -> None:
+        """
+        Store analysis in history for learning
+        
+        Args:
+            analysis_id: Analysis identifier
+            query: The query that was analyzed
+            analysis: The comprehensive analysis result
+            trace_id: Optional trace ID
+        """
+        try:
             # Store in history for learning
             self.analysis_history.append({
                 "analysis_id": analysis_id,
-                "query": sanitized_query,
-                "analysis": comprehensive_analysis,
+                "query": query,
+                "analysis": analysis,
                 "timestamp": datetime.now(),
                 "trace_id": trace_id
             })
@@ -153,238 +392,17 @@ class EnhancedQueryAnalyzer:
             # Keep only recent history (last 100 analyses)
             if len(self.analysis_history) > 100:
                 self.analysis_history = self.analysis_history[-100:]
-            
-            logger.info("comprehensive_query_analysis_completed", 
-                       analysis_id=analysis_id,
-                       overall_strategy=overall_strategy,
-                       trace_id=trace_id)
-            
-            return comprehensive_analysis
-            
-        except Exception as e:
-            logger.error("comprehensive_query_analysis_failed", 
-                        error=str(e),
+                
+            logger.debug("analysis_stored_in_history", 
+                        analysis_id=analysis_id,
+                        history_size=len(self.analysis_history),
                         trace_id=trace_id)
-            raise
-    
-    def _analyze_complexity(self, query: str) -> QueryComplexityAnalysis:
-        """Analyze query complexity using LLM"""
-        logger.debug("analyzing_query_complexity")
-        
-        complexity_template = """
-        Analyze the complexity of this query and provide structured assessment.
-        
-        Consider these factors:
-        - Number of concepts involved
-        - Depth of analysis required
-        - Multiple data sources needed
-        - Relationship complexity
-        - Processing steps required
-        
-        Query to analyze: {user_query}
-        
-        Provide assessment in this format:
-        Complexity Level: [Simple/Moderate/Complex/Multi-faceted]
-        Reasoning: [Detailed explanation]
-        Estimated Processing Time: [Quick/Standard/Extended/Comprehensive]
-        Requires Multiple Steps: [Yes/No]
-        """
-        
-        try:
-            response = secure_llm_interaction(
-                self.llm, 
-                complexity_template, 
-                query
-            )
-            
-            # Parse response and create structured output
-            return self._parse_complexity_response(response)
-            
+                        
         except Exception as e:
-            logger.error("complexity_analysis_failed", error=str(e))
-            # Return default complexity analysis
-            return QueryComplexityAnalysis(
-                complexity_level="Moderate",
-                reasoning="Analysis failed, using default assessment",
-                estimated_processing_time="Standard",
-                requires_multiple_steps=True
-            )
-    
-    def _analyze_medical_domain(self, query: str) -> MedicalDomainAnalysis:
-        """Analyze medical domain and relevance"""
-        logger.debug("analyzing_medical_domain")
-        
-        medical_template = """
-        Analyze this query for medical/healthcare relevance and domain classification.
-        
-        Determine:
-        1. Is this query medical/healthcare related?
-        2. What specific medical domain (radiology, cardiology, oncology, etc.)?
-        3. What medical entities are present?
-        4. What is the clinical context?
-        
-        Query to analyze: {user_query}
-        
-        Provide assessment in this format:
-        Is Medical: [Yes/No]
-        Medical Domain: [Specific domain or "Not Medical"]
-        Confidence Score: [0.0-1.0]
-        Medical Entities: [List of medical terms found]
-        Clinical Context: [Description of clinical scenario]
-        """
-        
-        try:
-            response = secure_llm_interaction(
-                self.llm,
-                medical_template,
-                query
-            )
-            
-            return self._parse_medical_response(response)
-            
-        except Exception as e:
-            logger.error("medical_domain_analysis_failed", error=str(e))
-            return MedicalDomainAnalysis(
-                is_medical=False,
-                medical_domain="Unknown",
-                confidence_score=0.0,
-                medical_entities=[],
-                clinical_context="Analysis failed"
-            )
-    
-    def _analyze_information_seeking(self, query: str) -> InformationSeekingAnalysis:
-        """Analyze what type of information is being sought"""
-        logger.debug("analyzing_information_seeking")
-        
-        info_template = """
-        Analyze what type of information this query is seeking.
-        
-        Consider:
-        - Type of information (Factual, Comparative, Analytical, Procedural, Diagnostic)
-        - Specific information needs
-        - Whether relationships between entities are needed
-        - Whether quantitative/statistical data is required
-        - Time-related aspects
-        
-        Query to analyze: {user_query}
-        
-        Provide assessment in this format:
-        Information Type: [Factual/Comparative/Analytical/Procedural/Diagnostic]
-        Specific Needs: [List of specific information requirements]
-        Requires Relationships: [Yes/No]
-        Requires Quantitative Data: [Yes/No]
-        Temporal Aspect: [Current/Historical/Trending/Predictive/Not Applicable]
-        """
-        
-        try:
-            response = secure_llm_interaction(
-                self.llm,
-                info_template,
-                query
-            )
-            
-            return self._parse_information_response(response)
-            
-        except Exception as e:
-            logger.error("information_seeking_analysis_failed", error=str(e))
-            return InformationSeekingAnalysis(
-                information_type="Factual",
-                specific_needs=["General information"],
-                requires_relationships=False,
-                requires_quantitative_data=False,
-                temporal_aspect="Current"
-            )
-    
-    def _analyze_sub_questions(self, query: str) -> SubQuestionAnalysis:
-        """Analyze sub-questions within the main query"""
-        logger.debug("analyzing_sub_questions")
-        
-        subq_template = """
-        Analyze this query for multiple sub-questions and their relationships.
-        
-        Identify:
-        - Whether the query contains multiple distinct questions
-        - Individual sub-questions that need separate answers
-        - Dependencies between sub-questions
-        - Optimal processing order
-        
-        Query to analyze: {user_query}
-        
-        Provide assessment in this format:
-        Has Multiple Questions: [Yes/No]
-        Sub-questions: [List each sub-question separately]
-        Question Dependencies: [Describe how questions relate]
-        Processing Order: [Recommended order for addressing questions]
-        """
-        
-        try:
-            response = secure_llm_interaction(
-                self.llm,
-                subq_template,
-                query
-            )
-            
-            return self._parse_subquestion_response(response)
-            
-        except Exception as e:
-            logger.error("sub_question_analysis_failed", error=str(e))
-            return SubQuestionAnalysis(
-                has_multiple_questions=False,
-                sub_questions=[query],
-                question_dependencies=["No dependencies"],
-                processing_order=["Process as single question"]
-            )
-    
-    def _analyze_tool_requirements(self, query: str, medical_analysis: MedicalDomainAnalysis, 
-                                 complexity_analysis: QueryComplexityAnalysis) -> ToolRequirementAnalysis:
-        """Analyze what tools would be most effective"""
-        logger.debug("analyzing_tool_requirements")
-        
-        # Available tools in the system
-        available_tools = [
-            "vector_search", "graph_search", "both_searches",
-            "medical_validation", "query_analysis", "document_retrieval",
-            "relationship_analysis", "statistical_analysis"
-        ]
-        
-        tool_template = """
-        Based on this query analysis, recommend the most effective tools and processing approach.
-        
-        Query: {user_query}
-        Medical Domain: {medical_domain}
-        Complexity: {complexity_level}
-        Is Medical: {is_medical}
-        
-        Available tools: {available_tools}
-        
-        Provide recommendations in this format:
-        Recommended Tools: [List of tools in order of importance]
-        Tool Priorities: [Rate each tool 1-10 for importance]
-        Tool Reasoning: [Explain why each tool is recommended]
-        Fallback Options: [Alternative tools if primary options fail]
-        """
-        
-        try:
-            response = secure_llm_interaction(
-                self.llm,
-                tool_template,
-                query,
-                medical_domain=medical_analysis.medical_domain,
-                complexity_level=complexity_analysis.complexity_level,
-                is_medical=medical_analysis.is_medical,
-                available_tools=", ".join(available_tools)
-            )
-            
-            return self._parse_tool_response(response)
-            
-        except Exception as e:
-            logger.error("tool_requirements_analysis_failed", error=str(e))
-            return ToolRequirementAnalysis(
-                recommended_tools=["vector_search", "medical_validation"],
-                tool_priorities={"vector_search": 8, "medical_validation": 9},
-                tool_reasoning={"vector_search": "Default search", "medical_validation": "Security check"},
-                fallback_options=["graph_search"]
-            )
+            logger.error("failed_to_store_analysis_history", 
+                        error=str(e),
+                        analysis_id=analysis_id,
+                        trace_id=trace_id)
     
     def _generate_overall_strategy(self, complexity: QueryComplexityAnalysis, 
                                  medical: MedicalDomainAnalysis,
@@ -418,159 +436,6 @@ class EnhancedQueryAnalyzer:
             strategy_parts.append("5. Consolidate and validate results")
         
         return " -> ".join(strategy_parts)
-    
-    def _parse_complexity_response(self, response: str) -> QueryComplexityAnalysis:
-        """Parse LLM response for complexity analysis"""
-        # Simple parsing - in production, would use more robust parsing
-        lines = response.strip().split('\n')
-        
-        complexity_level = "Moderate"
-        reasoning = "Analysis completed"
-        processing_time = "Standard"
-        multiple_steps = True
-        
-        for line in lines:
-            if "complexity level:" in line.lower():
-                complexity_level = line.split(':', 1)[1].strip()
-            elif "reasoning:" in line.lower():
-                reasoning = line.split(':', 1)[1].strip()
-            elif "processing time:" in line.lower():
-                processing_time = line.split(':', 1)[1].strip()
-            elif "multiple steps:" in line.lower():
-                multiple_steps = "yes" in line.lower()
-        
-        return QueryComplexityAnalysis(
-            complexity_level=complexity_level,
-            reasoning=reasoning,
-            estimated_processing_time=processing_time,
-            requires_multiple_steps=multiple_steps
-        )
-    
-    def _parse_medical_response(self, response: str) -> MedicalDomainAnalysis:
-        """Parse LLM response for medical analysis"""
-        lines = response.strip().split('\n')
-        
-        is_medical = False
-        medical_domain = "Not Medical"
-        confidence_score = 0.0
-        medical_entities = []
-        clinical_context = "No clinical context"
-        
-        for line in lines:
-            if "is medical:" in line.lower():
-                is_medical = "yes" in line.lower()
-            elif "medical domain:" in line.lower():
-                medical_domain = line.split(':', 1)[1].strip()
-            elif "confidence score:" in line.lower():
-                try:
-                    confidence_score = float(line.split(':', 1)[1].strip())
-                except:
-                    confidence_score = 0.5
-            elif "medical entities:" in line.lower():
-                entities_str = line.split(':', 1)[1].strip()
-                medical_entities = [e.strip() for e in entities_str.split(',') if e.strip()]
-            elif "clinical context:" in line.lower():
-                clinical_context = line.split(':', 1)[1].strip()
-        
-        return MedicalDomainAnalysis(
-            is_medical=is_medical,
-            medical_domain=medical_domain,
-            confidence_score=confidence_score,
-            medical_entities=medical_entities,
-            clinical_context=clinical_context
-        )
-    
-    def _parse_information_response(self, response: str) -> InformationSeekingAnalysis:
-        """Parse LLM response for information seeking analysis"""
-        lines = response.strip().split('\n')
-        
-        information_type = "Factual"
-        specific_needs = ["General information"]
-        requires_relationships = False
-        requires_quantitative = False
-        temporal_aspect = "Current"
-        
-        for line in lines:
-            if "information type:" in line.lower():
-                information_type = line.split(':', 1)[1].strip()
-            elif "specific needs:" in line.lower():
-                needs_str = line.split(':', 1)[1].strip()
-                specific_needs = [n.strip() for n in needs_str.split(',') if n.strip()]
-            elif "requires relationships:" in line.lower():
-                requires_relationships = "yes" in line.lower()
-            elif "requires quantitative:" in line.lower():
-                requires_quantitative = "yes" in line.lower()
-            elif "temporal aspect:" in line.lower():
-                temporal_aspect = line.split(':', 1)[1].strip()
-        
-        return InformationSeekingAnalysis(
-            information_type=information_type,
-            specific_needs=specific_needs,
-            requires_relationships=requires_relationships,
-            requires_quantitative_data=requires_quantitative,
-            temporal_aspect=temporal_aspect
-        )
-    
-    def _parse_subquestion_response(self, response: str) -> SubQuestionAnalysis:
-        """Parse LLM response for sub-question analysis"""
-        lines = response.strip().split('\n')
-        
-        has_multiple = False
-        sub_questions = []
-        dependencies = ["No dependencies"]
-        processing_order = ["Process as single question"]
-        
-        for line in lines:
-            if "has multiple questions:" in line.lower():
-                has_multiple = "yes" in line.lower()
-            elif "sub-questions:" in line.lower():
-                questions_str = line.split(':', 1)[1].strip()
-                sub_questions = [q.strip() for q in questions_str.split(',') if q.strip()]
-            elif "question dependencies:" in line.lower():
-                deps_str = line.split(':', 1)[1].strip()
-                dependencies = [d.strip() for d in deps_str.split(',') if d.strip()]
-            elif "processing order:" in line.lower():
-                order_str = line.split(':', 1)[1].strip()
-                processing_order = [o.strip() for o in order_str.split(',') if o.strip()]
-        
-        return SubQuestionAnalysis(
-            has_multiple_questions=has_multiple,
-            sub_questions=sub_questions if sub_questions else [response[:100]],
-            question_dependencies=dependencies,
-            processing_order=processing_order
-        )
-    
-    def _parse_tool_response(self, response: str) -> ToolRequirementAnalysis:
-        """Parse LLM response for tool requirements"""
-        lines = response.strip().split('\n')
-        
-        recommended_tools = ["vector_search"]
-        tool_priorities = {"vector_search": 8}
-        tool_reasoning = {"vector_search": "Default search tool"}
-        fallback_options = ["graph_search"]
-        
-        for line in lines:
-            if "recommended tools:" in line.lower():
-                tools_str = line.split(':', 1)[1].strip()
-                recommended_tools = [t.strip() for t in tools_str.split(',') if t.strip()]
-            elif "fallback options:" in line.lower():
-                fallback_str = line.split(':', 1)[1].strip()
-                fallback_options = [f.strip() for f in fallback_str.split(',') if f.strip()]
-        
-        # Set default priorities and reasoning for recommended tools
-        for tool in recommended_tools:
-            if tool not in tool_priorities:
-                tool_priorities[tool] = 7
-            if tool not in tool_reasoning:
-                tool_reasoning[tool] = f"Recommended for this query type"
-        
-        return ToolRequirementAnalysis(
-            recommended_tools=recommended_tools,
-            tool_priorities=tool_priorities,
-            tool_reasoning=tool_reasoning,
-            fallback_options=fallback_options
-        )
-    
 
     
     def get_analysis_statistics(self) -> Dict[str, Any]:

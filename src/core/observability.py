@@ -47,12 +47,21 @@ try:
     requests.Session.request = patched_request # type: ignore
     
     langsmith_api_key = get_secret_from_keyvault("LANGCHAIN_API_KEY")
-    if langsmith_api_key:
-        langsmith_client = Client(api_key=langsmith_api_key)
+    langsmith_endpoint = get_secret_from_keyvault("LANGCHAIN_ENDPOINT")
+    
+    # Set environment variables for LangSmith SDK
+    if langsmith_api_key and langsmith_endpoint:
+        os.environ['LANGCHAIN_API_KEY'] = langsmith_api_key
+        os.environ['LANGCHAIN_ENDPOINT'] = langsmith_endpoint
+        os.environ['LANGCHAIN_TRACING_V2'] = 'true'
+        
+        langsmith_client = Client(
+            api_key=langsmith_api_key,
+            api_url=langsmith_endpoint
+        )
         logger.info("LangSmith client initialized successfully with SSL bypass")
     else:
-        logger.warning("LANGCHAIN_API_KEY not found - LangSmith tracing disabled")
-        langsmith_client = None
+        raise ValueError("LANGCHAIN_API_KEY and LANGCHAIN_ENDPOINT must be available")
 except Exception as e:
     logger.error(f"Failed to initialize LangSmith client: {e}")
     logger.info("Continuing without LangSmith tracing...")

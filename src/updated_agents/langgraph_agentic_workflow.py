@@ -115,6 +115,7 @@ class LangGraphAgenticWorkflow:
         workflow.add_node("graph_search", self._graph_search_node)
         workflow.add_node("validator", self._validator_node)
         workflow.add_node("synthesizer", self._synthesizer_node)
+        workflow.add_node("non_medical_handler", self._non_medical_handler_node)
         
         # Set entry point
         workflow.set_entry_point("orchestrator")
@@ -127,6 +128,7 @@ class LangGraphAgenticWorkflow:
                 "vector": "vector_search",
                 "graph": "graph_search", 
                 "both": "vector_search",
+                "non_medical": "non_medical_handler",
                 "none": END
             }
         )
@@ -145,12 +147,33 @@ class LangGraphAgenticWorkflow:
         workflow.add_edge("graph_search", "validator")
         workflow.add_edge("validator", "synthesizer")
         workflow.add_edge("synthesizer", END)
+        workflow.add_edge("non_medical_handler", END)
         
         # Compile the workflow
         compiled_workflow = workflow.compile()
         
         logger.info("langgraph_workflow_compiled")
         return compiled_workflow
+    
+    def _non_medical_handler_node(self, state: LangGraphAgenticState) -> LangGraphAgenticState:
+        """Handle non-medical queries with a helpful response"""
+        logger.info("non_medical_handler_started", trace_id=state.get("trace_id"))
+        
+        state.update({
+            "final_answer": "This system is designed to answer medical and healthcare-related questions. Your query doesn't appear to be medical in nature. Please ask questions about medical imaging, patient data, diseases, treatments, or other healthcare topics.",
+            "sources": [],
+            "confidence_score": 0.8,
+            "current_step": "non_medical_response_complete",
+            "is_complete": True,
+            "agentic_indicators": {
+                "autonomous_reasoning": True,
+                "query_classification": "non_medical",
+                "response_type": "informational"
+            }
+        })
+        
+        logger.info("non_medical_handler_completed", trace_id=state.get("trace_id"))
+        return state
     
     def _orchestrator_node(self, state: LangGraphAgenticState) -> LangGraphAgenticState:
         """Orchestrator node - wraps existing orchestrator logic"""
@@ -259,17 +282,25 @@ class LangGraphAgenticWorkflow:
                    trace_id=state.get("trace_id"))
         return state
     
-    def _route_after_orchestrator(self, state: LangGraphAgenticState) -> Literal["vector", "graph", "both", "none"]:
+    def _route_after_orchestrator(self, state: LangGraphAgenticState) -> Literal["vector", "graph", "both", "non_medical", "none"]:
         """Route after orchestrator based on its decision"""
         route = state.get("selected_route", "none")
         
-        # Non-medical queries go straight to END
+        # Check if this is a medical query
         medical_validation = state.get("medical_validation", {})
         if not medical_validation.get("is_medical", False):
-            return "none"
+            # For non-medical queries, route to non-medical handler
+            logger.info("non_medical_query_detected", 
+                       query=state.get("query", ""),
+                       trace_id=state.get("trace_id"))
+            return "non_medical"
         
         logger.debug("routing_after_orchestrator", route=route)
-        return route
+        # Cast to the expected literal type
+        if route in ["vector", "graph", "both", "none"]:
+            return route
+        else:
+            return "none"
     
     def _route_after_vector(self, state: LangGraphAgenticState) -> Literal["continue_to_graph", "continue_to_validator"]:
         """Route after vector search based on original plan"""

@@ -353,8 +353,8 @@ class EnhancedQueryAnalyzer:
                 overall_strategy=overall_strategy
             )
             
-            logger.debug("unified_response_parsed_successfully", 
-                        analysis_id=analysis_id,
+            logger.info("unified_response_parsed_successfully", 
+                        comprehensive_analysis=comprehensive_analysis,
                         trace_id=trace_id)
             
             return comprehensive_analysis
@@ -393,7 +393,7 @@ class EnhancedQueryAnalyzer:
             if len(self.analysis_history) > 100:
                 self.analysis_history = self.analysis_history[-100:]
                 
-            logger.debug("analysis_stored_in_history", 
+            logger.info("analysis_stored_in_history", 
                         analysis_id=analysis_id,
                         history_size=len(self.analysis_history),
                         trace_id=trace_id)

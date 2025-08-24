@@ -207,7 +207,7 @@ class ExecutionPlanner:
             )
             
             logger.info("comprehensive_plan_created",
-                       enhanced_plan_id=enhanced_plan.plan_id,
+                       enhanced_plan_id=enhanced_plan,
                        total_steps=len(execution_steps),
                        contingency_count=len(contingency_strategies),
                        trace_id=trace_id)

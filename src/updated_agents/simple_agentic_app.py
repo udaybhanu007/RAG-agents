@@ -252,8 +252,8 @@ class EnhancedAgenticRAGApplication:
             logger.info("step_3_comprehensive_execution_planning", trace_id=trace_id)
             execution_plan = self.execution_planner.create_comprehensive_plan(analysis, tool_selection, trace_id=trace_id)
             
-            # Step 5: Execute through orchestrator agent  
-            logger.info("step_5_orchestrator_execution", trace_id=trace_id)
+            # Step 4: Execute through orchestrator agent  
+            logger.info("step_4_orchestrator_execution", trace_id=trace_id)
             
             # Update state with trace_id
             state.add_result("sanitized_query", query)

@@ -406,6 +406,7 @@ class DynamicToolSelector:
                 tool_scores=tool_scores_text
             )
             
+            logger.info("llm_assisted_reasoning_applied", reasoning_response=reasoning_response)
             return reasoning_response
             
         except Exception as e:

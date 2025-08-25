@@ -2,7 +2,33 @@
 
 ## Overview
 
-The RAG-Agents project is a sophisticated **Multi-Agent Retrieval-Augmented Generation (RAG) system** designed for medical and research document processing. It combines intelligent document ingestion, multi-modal retrieval (vector + graph), and AI-powered synthesis to provide accurate, contextual answers to complex queries.
+The RAG-Agents project is an **Autonomous Multi-Agent RAG System** specifically engineered for intelligent medical document analysis and research paper processing. Built on **LangGraph orchestration framework**, it demonstrates true agentic behavior through dynamic reasoning, adaptive learning, and autonomous decision-making capabilities. The system specializes in processing chest X-ray research data, medical imaging datasets, and clinical documentation to provide contextually-aware, medically-relevant responses.
+
+### Core Capabilities
+
+**🤖 True Agentic Intelligence**
+- **Dynamic Reasoning & Planning**: Agents autonomously analyze queries, set execution goals, and adapt strategies based on learned patterns
+- **Self-Learning Memory**: Continuous improvement through interaction history, strategy optimization, and performance feedback loops
+- **Autonomous Tool Selection**: Intelligent routing between vector similarity search, graph relationship queries, and hybrid approaches
+- **Adaptive Query Processing**: Context-aware analysis with medical domain validation and complexity assessment
+
+**📊 Medical Data Specialization**
+- **Chest X-Ray Research Focus**: Specialized processing of NIH Chest X-Ray datasets, including patient demographics, findings, and bounding box annotations
+- **Multi-Modal Document Processing**: Handles research papers (PDFs), structured datasets (CSV), and mixed clinical documentation
+- **Medical Entity Recognition**: Automated extraction of medical conditions, procedures, imaging findings, and patient characteristics
+- **Clinical Knowledge Graphs**: Neo4j-based relationship modeling for patient-finding associations, temporal progressions, and diagnostic patterns
+
+**🔄 Hybrid Retrieval Architecture**
+- **Vector Semantic Search**: Qdrant-powered similarity matching for conceptual and semantic queries using medical-domain embeddings
+- **Graph Relationship Queries**: Neo4j-based traversal for entity relationships, causal chains, and comparative analysis
+- **BM25 Keyword Search**: Precision matching for exact terminology, definitions, and specific medical terms
+- **Intelligent Strategy Selection**: LLM-driven choice between vector-only, graph-only, hybrid, or sequential processing approaches
+
+**🔐 Enterprise Security & Cloud Integration**
+- **Azure Key Vault Integration**: Centralized secrets management with Azure CLI authentication and development fallback mechanisms
+- **Multi-Layer Security Validation**: Prompt injection detection, input sanitization, and medical query validation
+- **Azure Cloud Services**: Blob Storage for document archival, OpenAI for LLM processing, and Key Vault for secure configuration
+- **Comprehensive Observability**: LangSmith tracing, structured logging, performance metrics, and workflow debugging capabilities
 
 ## System Architecture
 

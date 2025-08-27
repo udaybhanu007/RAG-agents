@@ -9,11 +9,16 @@ azure-keyvault-secrets>=4.7.0
 azure-identity>=1.15.0
 azure-identity-broker>=1.0.0
 
+# Microsoft Graph and SharePoint access
+msal>=1.24.0
+requests>=2.31.0
+
 # Unstructured document processing
 PyMuPDF>=1.23.0
 pymupdf4llm>=0.0.12
 Pillow>=10.0.0
 pdfplumber
+PyPDF2>=3.0.0
 
 # Machine learning and embeddings
 sentence-transformers>=2.2.0
@@ -28,6 +33,9 @@ xlrd>=2.0.0
 # For docx/Word document support
 python-docx>=0.8.0
 
+# For PowerPoint support
+python-pptx>=0.6.21
+
 # LangChain ecosystem - core and integrations
 langchain>=0.1.0
 langchain-core>=0.1.0
@@ -39,6 +47,10 @@ langgraph>=0.0.50
 
 # Graph database driver
 neo4j>=5.14.0
+
+# JIRA and Atlassian integration
+jira>=3.5.0
+atlassian-python-api>=3.41.0
 
 # Data validation and serialization
 pydantic>=2.0.0
@@ -63,3 +75,17 @@ azure-storage-blob>=12.19.0
 azure-keyvault-secrets>=4.7.0
 azure-identity>=1.15.0
 azure-identity>=1.15.0
+
+# Box SDK for Box integration
+boxsdk>=3.8.0
+
+python-dotenv
+requests
+PyPDF2
+pandas
+urllib3
+pydantic-ai
+mcp_use
+langchain_openai
+box-sdk-gen
+mcp_use

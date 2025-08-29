@@ -130,7 +130,7 @@ class ConfluenceMCPClient:
             print(f"Downloading content for page: '{page_title}' to {download_dir}")
             
             # Fetch the page content using MCP agent
-            query_text = f"Fetch all content of confluence page title {page_title}"
+            query_text = f"Download and return the full body content of the Confluence page named {page_title}"
             content = await self.query(query_text)
             
             if not content or content.strip() == "":
@@ -228,7 +228,7 @@ async def main():
     
     # Example 2: Download multiple pages
     print("\n=== Downloading Multiple Pages ===")
-    page_titles = ["MPC-POC", "User Story-Requirement"]
+    page_titles = ["Chest X-Ray Medical Document", "Chest X-ray Report Analysis"]
     multiple_result = await client.download_multiple_pages(page_titles)
     print(f"Multiple pages result: {multiple_result}")
     

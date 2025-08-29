@@ -25,7 +25,7 @@ def run_document_ingestion():
         storage_account_name = get_secret_from_keyvault("AZURE_STORAGE_ACCOUNT_NAME")
         storage_account_key = get_secret_from_keyvault("AZURE_STORAGE_ACCOUNT_KEY")
         container_name = get_secret_from_keyvault("AZURE_BLOB_CONTAINER_NAME") or "rag-agents-container"
-        confluence_pages  = ["MPC-POC", "User Story-Requirement"]
+        confluence_pages  = ["Chest X-Ray Medical Document", "Chest X-ray Report Analysis"]
         box_folder_name = get_secret_from_keyvault("BOX_FOLDER_NAME") or "documents-ingest"
         adapter = document_ingestion_orchestrator.DocumentIngestionOrchestrator()
         

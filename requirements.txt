@@ -88,4 +88,4 @@ pydantic-ai
 mcp_use
 langchain_openai
 box-sdk-gen
-mcp_use
+boxsdk

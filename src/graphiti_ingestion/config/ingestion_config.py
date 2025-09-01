@@ -52,10 +52,11 @@ class AzureBlobStorageConfig(BaseModel):
 
 class AzureOpenAIConfig(BaseModel):
     """Azure OpenAI configuration for Graphiti"""
-    endpoint: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_ENDPOINT"))
+    endpoint: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_ENDPOINT", "https://azureopenai-genaiservice.openai.azure.com/"))
     api_key: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_KEY"))
-    deployment_name: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_DEPLOYMENT"))
-    api_version: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"))
+    deployment_name: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_DEPLOYMENT", "genai-ind-gpt-4o-mini"))
+    embedding_deployment: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small"))
+    api_version: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"))
     embedding_model: str = Field(default="text-embedding-3-small")  # Default embedding model
     
     @validator('api_key')

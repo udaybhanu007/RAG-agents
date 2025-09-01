@@ -97,10 +97,10 @@ class CSVGraphitiIngestionManager(GraphitiIngestionManager):
                         })
                         logger.error(f"Failed batch {batch_num + 1}: {batch_result.get('error', 'Unknown error')}")
                     
-                    # Add delay between batches for rate limiting
-                    if batch_num < num_batches - 1:
-                        logger.info("Waiting 15 seconds between batches for rate limiting...")
-                        await asyncio.sleep(15)
+                    # No delay for ultra-fast processing
+                    # if batch_num < num_batches - 1:
+                    #     logger.info("Waiting 1 second between batches...")
+                    #     await asyncio.sleep(1)
                         
                 except Exception as e:
                     logger.error(f"Exception in batch {batch_num + 1}: {str(e)}")
@@ -140,7 +140,7 @@ class CSVGraphitiIngestionManager(GraphitiIngestionManager):
                                 start_idx: int,
                                 end_idx: int) -> Dict[str, Any]:
         """
-        Process a single batch of CSV records
+        Process a single batch of CSV records using bulk ingestion
         
         Args:
             document_metadata: Original document metadata
@@ -154,28 +154,14 @@ class CSVGraphitiIngestionManager(GraphitiIngestionManager):
             Batch processing result
         """
         try:
-            # Create meaningful batch content
+            # Create batch title for episode naming
             batch_title = f"{Path(document_metadata.name).stem} - Batch {batch_number}/{total_batches}"
             
-            # Convert batch to structured text format
-            batch_content = self._format_csv_batch_content(batch_data, batch_title, start_idx, end_idx)
-            
-            # Create batch metadata
-            batch_metadata = document_metadata.to_dict()
-            batch_metadata.update({
-                "title": batch_title,
-                "batch_number": batch_number,
-                "total_batches": total_batches,
-                "records_in_batch": len(batch_data),
-                "record_range": f"{start_idx}-{end_idx}",
-                "source_file": document_metadata.name
-            })
-            
-            # Create document container for batch
-            batch_container = self._create_document_container_from_content_dict(batch_metadata, batch_content)
-            
-            # Ingest batch
-            result = await self.graphiti_service.ingest_single_document(batch_container)
+            # Use the new bulk CSV ingestion method
+            result = await self.graphiti_service.ingest_csv_bulk(
+                csv_data=batch_data,
+                document_metadata=document_metadata
+            )
             
             return {
                 "batch_number": batch_number,
@@ -183,7 +169,8 @@ class CSVGraphitiIngestionManager(GraphitiIngestionManager):
                 "records_count": len(batch_data),
                 "success": result.get("success", False),
                 "graphiti_result": result,
-                "title": batch_title
+                "title": batch_title,
+                "episodes_created": result.get("episodes_ingested", 0)
             }
             
         except Exception as e:
@@ -335,10 +322,10 @@ class CSVGraphitiIngestionManager(GraphitiIngestionManager):
                     else:
                         logger.error(f"Failed to process CSV: {doc_metadata.name}")
                     
-                    # Add delay between CSV files
+                    # Reduced delay between CSV files for faster processing
                     if i < len(csv_documents) - 1:
-                        logger.info("Waiting 30 seconds between CSV files for rate limiting...")
-                        await asyncio.sleep(30)
+                        logger.info("Waiting 2 seconds between CSV files...")
+                        await asyncio.sleep(2)
                 
                 except Exception as e:
                     logger.error(f"Exception processing CSV {doc_metadata.name}: {e}")

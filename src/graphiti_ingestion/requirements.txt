@@ -2,7 +2,10 @@
 # Phase 1 Implementation - Document Ingestion Only
 
 # Core Graphiti dependencies
-graphiti-core>=1.0.0
+graphiti-core==0.8.1
+openai>=1.0.0
+neo4j>=5.0.0
+pandas>=2.0.0
 
 # Azure dependencies for blob storage
 azure-storage-blob>=12.19.0
@@ -31,4 +34,4 @@ mypy>=1.7.0
 
 # Additional utilities
 pathlib2>=2.3.7
-mimetypes>=1.6.0
+# Note: mimetypes is a built-in Python module, not a pip package
